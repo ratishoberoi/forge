@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual env
+.venv/
+
+# Models
+models/
+*.safetensors
+*.bin
+
+# Embeddings/cache
+.cache/
+hf_cache/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime
+runtime_data/
+worktrees/
+
+# Qdrant
+qdrant_storage/
+
+# OS
+.DS_Store
+Thumbs.db

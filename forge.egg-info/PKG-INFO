@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: forge
+Version: 0.2.0
+Summary: Forge local inference and model serving layer
+Requires-Python: >=3.12
+Requires-Dist: fastapi>=0.136.0
+Requires-Dist: httpx>=0.28.0
+Requires-Dist: orjson>=3.11.0
+Requires-Dist: pydantic-settings>=2.14.0
+Requires-Dist: transformers>=5.8.0
+Requires-Dist: uvicorn>=0.46.0
+Requires-Dist: vllm>=0.20.2
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=1.1.0; extra == "dev"

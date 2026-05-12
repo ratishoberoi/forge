@@ -1,0 +1,11 @@
+fastapi>=0.136.0
+httpx>=0.28.0
+orjson>=3.11.0
+pydantic-settings>=2.14.0
+transformers>=5.8.0
+uvicorn>=0.46.0
+vllm>=0.20.2
+
+[dev]
+pytest>=8.3.0
+pytest-asyncio>=1.1.0
