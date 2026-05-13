@@ -25,33 +25,76 @@ class RuntimeModelMetadata(BaseModel):
 class ModelRecord(BaseModel):
     id: str
     alias: str
-    role: Literal["generation", "embedding"]
+    role: Literal[
+        "primary_coder",
+        "repo_synthesizer",
+        "retry_engine",
+        "architecture_coder",
+        "judge",
+        "embedding",
+    ]
     engine: Literal["vllm", "sentence_transformers"]
     provider: Literal["local"] = "local"
     model_name: str
     trust_remote_code: bool = False
     quantization: QuantizationConfig = Field(default_factory=QuantizationConfig)
     runtime: RuntimeModelMetadata = Field(default_factory=RuntimeModelMetadata)
+    reasoning: bool = False
+    moe: bool = False
+    architecture_focus: bool = False
 
 
 class ModelRegistry:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._records = {
-            settings.model_alias: ModelRecord(
-                id=settings.model_name,
-                alias=settings.model_alias,
-                role="generation",
+            "qwen-primary": ModelRecord(
+                id="Qwen3.5-Coder-35B-A3B",
+                alias="qwen-primary",
+                role="primary_coder",
                 engine="vllm",
-                model_name=settings.model_name,
-                trust_remote_code=settings.model_trust_remote_code,
-                quantization=QuantizationConfig(method=settings.model_quantization),
-                runtime=RuntimeModelMetadata(
-                    max_model_len=settings.model_max_model_len,
-                    tensor_parallel_size=settings.model_tensor_parallel_size,
-                    gpu_memory_utilization=settings.model_gpu_memory_utilization,
-                    supports_streaming=True,
-                ),
+                model_name="Qwen3.5-Coder-35B-A3B",
+                quantization=QuantizationConfig(method="AWQ"),
+                runtime=RuntimeModelMetadata(max_model_len=32768),
+            ),
+            "deepseek-synth": ModelRecord(
+                id="DeepSeek-V4-class-32B",
+                alias="deepseek-synth",
+                role="repo_synthesizer",
+                engine="vllm",
+                model_name="DeepSeek-V4-class-32B",
+                quantization=QuantizationConfig(method="GPTQ"),
+                runtime=RuntimeModelMetadata(max_model_len=32768),
+            ),
+            "qwen-retry": ModelRecord(
+                id="Qwen3-A3B-MoE",
+                alias="qwen-retry",
+                role="retry_engine",
+                engine="vllm",
+                model_name="Qwen3-A3B-MoE",
+                quantization=QuantizationConfig(method="AWQ"),
+                runtime=RuntimeModelMetadata(max_model_len=16384),
+                moe=True,
+            ),
+            "glm-architect": ModelRecord(
+                id="GLM-4.7-class",
+                alias="glm-architect",
+                role="architecture_coder",
+                engine="vllm",
+                model_name="GLM-4.7-class",
+                quantization=QuantizationConfig(method="GPTQ"),
+                runtime=RuntimeModelMetadata(max_model_len=32768),
+                architecture_focus=True,
+            ),
+            "glm-judge": ModelRecord(
+                id="GLM-Reasoning-Judge",
+                alias="glm-judge",
+                role="judge",
+                engine="vllm",
+                model_name="GLM-Reasoning-Judge",
+                quantization=QuantizationConfig(method="GPTQ"),
+                runtime=RuntimeModelMetadata(max_model_len=32768),
+                reasoning=True,
             ),
             settings.embedding_model_alias: ModelRecord(
                 id=settings.embedding_model_name,

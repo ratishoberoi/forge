@@ -1,11 +1,8 @@
 """Structured patch representation."""
-
 from __future__ import annotations
-
 import time
 import uuid
 from enum import StrEnum
-
 from pydantic import BaseModel, Field
 
 
@@ -31,7 +28,14 @@ class StructuredPatch(BaseModel):
     impacted_files: list[PatchTarget] = Field(default_factory=list)
     risk: PatchRisk = PatchRisk.UNKNOWN
     metadata: dict[str, object] = Field(default_factory=dict)
+    summary: str | None = None
+    reasoning: str | None = None
+    validation_errors: list[str] = Field(default_factory=list)
+    score: float | None = None
     created_at: float = Field(default_factory=time.time)
+
+    def is_valid(self) -> bool:
+        return len(self.validation_errors) == 0
 
 
 class PatchBundle(BaseModel):

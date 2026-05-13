@@ -40,3 +40,6 @@ include = ["backend*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "live: requires live local inference server",
+]
