@@ -5,6 +5,12 @@ from backend.runtime.api import MultiAgentRuntime
 from backend.runtime.candidate import CandidateCollection, PatchCandidate
 from backend.runtime.convergence import ConvergenceTracker
 from backend.runtime.context import SharedContextStore
+from backend.runtime.execution_review import (
+    ExecutionReview,
+    ExecutionSeverity,
+    build_execution_summary,
+    summarize_execution_failures,
+)
 from backend.runtime.events import AsyncEventBus, EventType, RuntimeEvent
 from backend.runtime.judge import JudgeResult, JudgeScore, PatchJudge
 from backend.runtime.messages import (
@@ -44,6 +50,8 @@ __all__ = [
     "ConvergenceTracker",
     "ContextPayload",
     "CritiquePayload",
+    "ExecutionReview",
+    "ExecutionSeverity",
     "JudgeResult",
     "JudgeScore",
     "EventType",
@@ -69,9 +77,11 @@ __all__ = [
     "RetryPolicy",
     "RetryResult",
     "build_candidate_comparison_prompt",
+    "build_execution_summary",
     "build_convergence_warning_prompt",
     "build_patch_judge_prompt",
     "build_retry_candidate_prompt",
     "build_retry_prompt",
     "build_self_repair_prompt",
+    "summarize_execution_failures",
 ]
