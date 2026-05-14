@@ -3,8 +3,10 @@
 from backend.runtime.agents import AgentCapability, AgentMetadata, BaseAgent
 from backend.runtime.api import MultiAgentRuntime
 from backend.runtime.candidate import CandidateCollection, PatchCandidate
+from backend.runtime.consensus import ConsensusEngine, ConsensusResult
 from backend.runtime.convergence import ConvergenceTracker
 from backend.runtime.context import SharedContextStore
+from backend.runtime.debate import DebateOrchestrator, DebateResult, DebateRound
 from backend.runtime.execution_review import (
     ExecutionReview,
     ExecutionSeverity,
@@ -36,6 +38,8 @@ from backend.runtime.review_prompting import (
     build_retry_prompt,
 )
 from backend.runtime.results import CandidateSolution, ResultAggregator
+from backend.runtime.ranking import compare_scores, rank_candidates
+from backend.runtime.reviewer import CandidateReview, CandidateReviewer
 from backend.runtime.tasks import Task, TaskPriority, TaskStatus
 
 __all__ = [
@@ -46,10 +50,17 @@ __all__ = [
     "BaseAgent",
     "CandidateSolution",
     "CandidateCollection",
+    "CandidateReview",
+    "CandidateReviewer",
     "CodePatchPayload",
+    "ConsensusEngine",
+    "ConsensusResult",
     "ConvergenceTracker",
     "ContextPayload",
     "CritiquePayload",
+    "DebateOrchestrator",
+    "DebateResult",
+    "DebateRound",
     "ExecutionReview",
     "ExecutionSeverity",
     "JudgeResult",
@@ -83,5 +94,7 @@ __all__ = [
     "build_retry_candidate_prompt",
     "build_retry_prompt",
     "build_self_repair_prompt",
+    "compare_scores",
+    "rank_candidates",
     "summarize_execution_failures",
 ]
