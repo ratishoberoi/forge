@@ -38,6 +38,7 @@ from backend.runtime.review_prompting import (
     build_retry_prompt,
 )
 from backend.runtime.results import CandidateSolution, ResultAggregator
+from backend.runtime.routing import CognitionRole, CognitionRouter, ContextBudget, RoutedContext, RoutingDecision
 from backend.runtime.ranking import compare_scores, rank_candidates
 from backend.runtime.reviewer import CandidateReview, CandidateReviewer
 from backend.runtime.tasks import Task, TaskPriority, TaskStatus
@@ -53,9 +54,12 @@ __all__ = [
     "CandidateReview",
     "CandidateReviewer",
     "CodePatchPayload",
+    "CognitionRole",
+    "CognitionRouter",
     "ConsensusEngine",
     "ConsensusResult",
     "ConvergenceTracker",
+    "ContextBudget",
     "ContextPayload",
     "CritiquePayload",
     "DebateOrchestrator",
@@ -87,6 +91,8 @@ __all__ = [
     "RetryOrchestrator",
     "RetryPolicy",
     "RetryResult",
+    "RoutedContext",
+    "RoutingDecision",
     "build_candidate_comparison_prompt",
     "build_execution_summary",
     "build_convergence_warning_prompt",
