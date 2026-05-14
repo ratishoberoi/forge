@@ -2,6 +2,7 @@
 
 from backend.runtime.agents import AgentCapability, AgentMetadata, BaseAgent
 from backend.runtime.api import MultiAgentRuntime
+from backend.runtime.binding import BindingDecision, RuntimeBinder, RuntimeBinding
 from backend.runtime.candidate import CandidateCollection, PatchCandidate
 from backend.runtime.consensus import ConsensusEngine, ConsensusResult
 from backend.runtime.convergence import ConvergenceTracker
@@ -49,6 +50,7 @@ __all__ = [
     "AgentMessage",
     "AsyncEventBus",
     "BaseAgent",
+    "BindingDecision",
     "CandidateSolution",
     "CandidateCollection",
     "CandidateReview",
@@ -91,6 +93,8 @@ __all__ = [
     "RetryOrchestrator",
     "RetryPolicy",
     "RetryResult",
+    "RuntimeBinder",
+    "RuntimeBinding",
     "RoutedContext",
     "RoutingDecision",
     "build_candidate_comparison_prompt",
