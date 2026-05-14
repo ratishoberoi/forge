@@ -15,6 +15,7 @@ from backend.runtime.execution_review import (
     summarize_execution_failures,
 )
 from backend.runtime.events import AsyncEventBus, EventType, RuntimeEvent
+from backend.runtime.fabric import CognitionExecutionFabric, CognitionRequest, CognitionResponse, InferencePolicy
 from backend.runtime.judge import JudgeResult, JudgeScore, PatchJudge
 from backend.runtime.messages import (
     AgentMessage,
@@ -58,6 +59,9 @@ __all__ = [
     "CodePatchPayload",
     "CognitionRole",
     "CognitionRouter",
+    "CognitionExecutionFabric",
+    "CognitionRequest",
+    "CognitionResponse",
     "ConsensusEngine",
     "ConsensusResult",
     "ConvergenceTracker",
@@ -95,6 +99,7 @@ __all__ = [
     "RetryResult",
     "RuntimeBinder",
     "RuntimeBinding",
+    "InferencePolicy",
     "RoutedContext",
     "RoutingDecision",
     "build_candidate_comparison_prompt",
