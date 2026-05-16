@@ -1,0 +1,221 @@
+import pytest
+from backend.runtime.artifact_exchange import ArtifactExchange
+from backend.runtime.artifact_loader import ArtifactLoader
+from backend.runtime.artifact_store import ArtifactStore
+from backend.runtime.autonomous_courtroom import (
+    AutonomousCourtroom,
+    AutonomousCourtroomError,
+)
+from backend.runtime.runtime_process import RuntimeProcess
+from backend.runtime.runtime_swap_engine import RuntimeSwapEngine
+
+
+# ── Fakes ─────────────────────────────────────────────────────────────────────
+
+class FakeLauncher:
+    def __init__(self) -> None:
+        self.launched: list[str] = []
+
+    def launch(self, process: RuntimeProcess) -> RuntimeProcess:
+        process.mark_launched(pid=999)
+        self.launched.append(process.role)
+        return process
+
+class FakeInference:
+    def infer(
+        self,
+        *,
+        port,
+        model,
+        prompt,
+        temperature=0.2,
+        max_tokens=300,
+    ):
+        return (
+            f"fake-response:"
+            f"{model}"
+        )
+    
+class FakeShutdown:
+    def __init__(self) -> None:
+        self.shutdowns: list[str] = []
+
+    def shutdown(self, process: RuntimeProcess) -> None:
+        process.mark_stopped()
+        self.shutdowns.append(process.role)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def make_swap_engine() -> tuple[RuntimeSwapEngine, FakeLauncher, FakeShutdown]:
+    launcher = FakeLauncher()
+    shutdown = FakeShutdown()
+    engine = RuntimeSwapEngine(launcher=launcher, shutdown=shutdown)
+    return engine, launcher, shutdown
+
+
+def make_exchange(tmp_path) -> ArtifactExchange:
+    return ArtifactExchange(
+        store=ArtifactStore(str(tmp_path)),
+        loader=ArtifactLoader(str(tmp_path)),
+    )
+
+
+def make_courtroom(tmp_path) -> tuple[AutonomousCourtroom, FakeLauncher, FakeShutdown]:
+    engine, launcher, shutdown = make_swap_engine()
+    courtroom = AutonomousCourtroom(
+    swap_engine=engine,
+    exchange=make_exchange(tmp_path),
+    inference=FakeInference(),
+    )
+    return courtroom, launcher, shutdown
+
+
+# ── execute ───────────────────────────────────────────────────────────────────
+
+def test_autonomous_courtroom_returns_three_artifacts(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+    assert len(artifacts) == 3
+
+
+def test_autonomous_courtroom_role_order(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+    assert artifacts[0].role == "PRIMARY_CODER"
+    assert artifacts[1].role == "DEEPSEEK_SYNTH"
+    assert artifacts[2].role == "JUDGE"
+
+
+def test_autonomous_courtroom_swap_sequence(tmp_path):
+    courtroom, launcher, shutdown = make_courtroom(tmp_path)
+    courtroom.execute(objective="Improve auth")
+
+    assert launcher.launched == [
+        "PRIMARY_CODER",
+        "DEEPSEEK_SYNTH",
+        "JUDGE",
+    ]
+    # Coder and synth shut down before next swap; judge shut down after round
+    assert "PRIMARY_CODER" in shutdown.shutdowns
+    assert "DEEPSEEK_SYNTH" in shutdown.shutdowns
+    assert "JUDGE" in shutdown.shutdowns
+
+
+def test_autonomous_courtroom_artifacts_persisted(tmp_path):
+    exchange = make_exchange(tmp_path)
+    engine, _, _ = make_swap_engine()
+    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+
+    courtroom.execute(objective="Improve auth")
+
+    assert exchange.exists("PRIMARY_CODER", 1)
+    assert exchange.exists("DEEPSEEK_SYNTH", 1)
+    assert exchange.exists("JUDGE", 1)
+
+
+def test_autonomous_courtroom_artifact_ids(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert artifacts[0].artifact_id == "coder_round_1"
+    assert artifacts[1].artifact_id == "synth_round_1"
+    assert artifacts[2].artifact_id == "judge_round_1"
+
+
+def test_autonomous_courtroom_artifact_content(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert (
+    artifacts[0].content
+    == "fake-response:qwen-primary"
+    )
+    assert (
+    artifacts[1].content
+    == "fake-response:deepseek-synth"
+    )
+    assert (
+    artifacts[2].content
+    == "fake-response:qwen-judge"
+    )
+
+
+def test_autonomous_courtroom_synth_references_coder(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert artifacts[1].metadata["critiques_artifact"] == "coder_round_1"
+
+
+def test_autonomous_courtroom_judge_references_both(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert artifacts[2].metadata["reviews_coder"] == "coder_round_1"
+    assert artifacts[2].metadata["reviews_synth"] == "synth_round_1"
+
+
+def test_autonomous_courtroom_round_ids(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    artifacts = courtroom.execute(objective="Improve auth", round_id=2)
+
+    assert all(a.round_id == 2 for a in artifacts)
+    assert artifacts[0].artifact_id == "coder_round_2"
+
+
+def test_autonomous_courtroom_blank_objective_raises(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    with pytest.raises(AutonomousCourtroomError, match="blank"):
+        courtroom.execute(objective="   ")
+
+
+# ── execute_multi_round ───────────────────────────────────────────────────────
+
+def test_execute_multi_round_returns_correct_structure(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    all_rounds = courtroom.execute_multi_round(objective="Improve auth", rounds=3)
+
+    assert len(all_rounds) == 3
+    for round_artifacts in all_rounds:
+        assert len(round_artifacts) == 3
+
+
+def test_execute_multi_round_sequential_round_ids(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    all_rounds = courtroom.execute_multi_round(objective="Improve auth", rounds=2)
+
+    assert all_rounds[0][0].round_id == 1
+    assert all_rounds[1][0].round_id == 2
+
+
+def test_execute_multi_round_zero_raises(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    with pytest.raises(AutonomousCourtroomError, match="rounds"):
+        courtroom.execute_multi_round(objective="Improve auth", rounds=0)
+
+
+# ── Retrieve after execute ────────────────────────────────────────────────────
+
+def test_retrieve_coder_artifact_after_execute(tmp_path):
+    exchange = make_exchange(tmp_path)
+    engine, _, _ = make_swap_engine()
+    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+    courtroom.execute(objective="Improve auth")
+
+    coder = exchange.retrieve_round(role="PRIMARY_CODER", round_id=1)
+    assert (
+    coder.content
+    == "fake-response:qwen-primary"
+    )
+
+
+def test_retrieve_full_role_history_after_multi_round(tmp_path):
+    exchange = make_exchange(tmp_path)
+    engine, _, _ = make_swap_engine()
+    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+    courtroom.execute_multi_round(objective="Improve auth", rounds=3)
+
+    history = exchange.retrieve_role_history("PRIMARY_CODER")
+    assert len(history) == 3
+    assert [a.round_id for a in history] == [1, 2, 3]
