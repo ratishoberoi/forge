@@ -23,7 +23,7 @@ class RuntimeSwapEngine:
         self,
         launcher: RuntimeLauncher,
         shutdown: RuntimeShutdown,
-        swap_delay_seconds: float = 5.0,
+        swap_delay_seconds: float = 20.0,
     ) -> None:
         self.launcher = launcher
         self.shutdown_manager = shutdown

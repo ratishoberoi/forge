@@ -109,20 +109,83 @@ class LocalInference:
         return messages
 
     @staticmethod
-    def _extract_content(data: dict, url: str) -> str:
+    def _extract_content(
+        data: dict,
+        url: str,
+    ) -> str:
         try:
-            choices = data["choices"]
+            choices = data.get(
+                "choices",
+                [],
+            )
+
             if not choices:
                 raise LocalInferenceError(
-                    f"Empty choices in response from {url}."
+                    f"Empty choices from {url}."
                 )
-            content = choices[0]["message"]["content"]
-            if not isinstance(content, str):
-                raise LocalInferenceError(
-                    f"Unexpected content type {type(content)} from {url}."
+
+            message = choices[0].get(
+                "message",
+                {},
+            )
+
+            content = message.get(
+                "content"
+            )
+
+            if isinstance(
+                content,
+                str,
+            ) and content.strip():
+                return content
+
+            reasoning = (
+                message.get(
+                    "reasoning"
                 )
-            return content
-        except (KeyError, IndexError) as exc:
+                or message.get(
+                    "reasoning_content"
+                )
+            )
+
+            if isinstance(
+                reasoning,
+                str,
+            ) and reasoning.strip():
+                return reasoning
+
+            if isinstance(
+                content,
+                list,
+            ):
+                parts: list[str] = []
+
+                for item in content:
+                    if (
+                        isinstance(
+                            item,
+                            dict,
+                        )
+                        and item.get("text")
+                    ):
+                        parts.append(
+                            item["text"]
+                        )
+
+                merged = "\n".join(
+                    parts
+                ).strip()
+
+                if merged:
+                    return merged
+
             raise LocalInferenceError(
-                f"Malformed response from {url}: {exc}"
+                f"No usable content "
+                f"returned from {url}."
+            )
+
+        except Exception as exc:
+            raise LocalInferenceError(
+                f"Malformed response "
+                f"from {url}: {exc}"
             ) from exc

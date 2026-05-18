@@ -4,22 +4,23 @@ import requests
 
 
 class RuntimeHealthError(Exception):
-    """Raised when health check encounters an unexpected error."""
+    """Raised when health checks fail unexpectedly."""
 
 
 class RuntimeHealth:
     """
-    Polls runtime inference endpoint for readiness.
+    Runtime readiness checker for OpenAI-compatible vLLM servers.
+    Uses /v1/models because it is significantly more reliable
+    than /health across vLLM versions.
     Responsibilities:
-    - wait until /health returns 200
-    - respect timeout
-    - support configurable poll interval
-    - provide instant check without waiting
+    - poll until runtime is ready to serve requests
+    - confirm runtime has stopped after shutdown
+    - provide single non-blocking readiness check
     """
 
     DEFAULT_TIMEOUT = 300
     DEFAULT_POLL_INTERVAL = 2
-    HEALTH_PATH = "/health"
+    MODELS_PATH = "/v1/models"
 
     def __init__(
         self,
@@ -34,10 +35,10 @@ class RuntimeHealth:
         timeout: int = DEFAULT_TIMEOUT,
     ) -> bool:
         """
-        Poll /health until 200 or timeout.
+        Poll /v1/models until 200 or timeout.
         Returns True if ready, False if timed out.
         """
-        url = self._health_url(port)
+        url = self._models_url(port)
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
@@ -50,9 +51,9 @@ class RuntimeHealth:
     def is_ready(self, port: int) -> bool:
         """
         Single non-blocking check.
-        Returns True if /health returns 200 right now.
+        Returns True if /v1/models returns 200 right now.
         """
-        return self._ping(self._health_url(port))
+        return self._ping(self._models_url(port))
 
     def wait_until_stopped(
         self,
@@ -61,11 +62,11 @@ class RuntimeHealth:
         timeout: int = 30,
     ) -> bool:
         """
-        Poll until /health stops responding.
+        Poll until /v1/models stops responding.
         Useful after SIGTERM to confirm clean shutdown.
         Returns True if stopped within timeout.
         """
-        url = self._health_url(port)
+        url = self._models_url(port)
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
@@ -77,12 +78,21 @@ class RuntimeHealth:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _health_url(self, port: int) -> str:
-        return f"http://127.0.0.1:{port}{self.HEALTH_PATH}"
+    def _models_url(self, port: int) -> str:
+        return f"http://127.0.0.1:{port}{self.MODELS_PATH}"
 
     def _ping(self, url: str) -> bool:
         try:
-            response = requests.get(url, timeout=5)
-            return response.status_code == 200
+            response = requests.get(
+                url,
+                timeout=5,
+            )
+
+            if response.status_code != 200:
+                return False
+
+            data = response.json()
+
+            return "data" in data
         except requests.exceptions.RequestException:
             return False

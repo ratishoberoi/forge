@@ -15,6 +15,7 @@ class RuntimeProcess:
     model_name: str
     port: int
     pid: int | None = None
+    pgid: int | None = None
     active: bool = False
     launched_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -48,11 +49,17 @@ class RuntimeProcess:
             return None
         return (datetime.now(timezone.utc) - self.launched_at).total_seconds()
 
-    def mark_launched(self, pid: int) -> None:
-        """Set PID, mark active, record launch time."""
+    def mark_launched(
+        self,
+        pid: int,
+        pgid: int | None = None,
+    ) -> None:
         self.pid = pid
+        self.pgid = pgid
         self.active = True
-        self.launched_at = datetime.now(timezone.utc)
+        self.launched_at = (
+            datetime.now(timezone.utc)
+        )
 
     def mark_stopped(self) -> None:
         """Mark process as inactive."""

@@ -3,7 +3,7 @@ import os
 import subprocess
 import time
 from backend.runtime.runtime_process import RuntimeProcess
-
+import signal
 
 class RuntimeLaunchError(Exception):
     """Raised when runtime launch fails."""
@@ -20,11 +20,11 @@ class RuntimeLauncher:
     - optional startup wait before returning
     """
 
-    DEFAULT_STARTUP_WAIT = 2.0
+    DEFAULT_STARTUP_WAIT = 0.5
     DEFAULT_LOG_DIR = "~/Forge/runtime_logs"
-    DEFAULT_MAX_MODEL_LEN = 24576
+    DEFAULT_MAX_MODEL_LEN = 8192
     DEFAULT_GPU_MEMORY_UTILIZATION = "0.90"
-    DEFAULT_MAX_NUM_SEQS = 128
+    DEFAULT_MAX_NUM_SEQS = 64
 
     def __init__(
         self,
@@ -66,6 +66,7 @@ class RuntimeLauncher:
                     command,
                     stdout=stdout_file,
                     stderr=stderr_file,
+                    start_new_session=True,
                 )
         except FileNotFoundError as exc:
             raise RuntimeLaunchError(
@@ -76,7 +77,10 @@ class RuntimeLauncher:
                 f"Failed to launch runtime for role='{process.role}': {exc}"
             ) from exc
 
-        process.mark_launched(proc.pid)
+        process.mark_launched(
+            proc.pid,
+            os.getpgid(proc.pid),
+        )
 
         if self.startup_wait > 0:
             time.sleep(self.startup_wait)
