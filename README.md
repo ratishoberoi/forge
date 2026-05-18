@@ -1,169 +1,363 @@
-# Forge Phase 2
+# Forge
 
-Forge provides a fully local coding-agent backend with a production-oriented inference layer and a repository intelligence engine for autonomous codebase understanding.
+Forge is an autonomous multi-model software engineering runtime designed for sequential cognition orchestration on a single GPU.
 
-## Features
+It combines:
 
-- Fully local serving with `vLLM`
-- OpenAI-compatible `POST /v1/chat/completions`
-- Streaming token responses via Server-Sent Events
-- Structured request tracing and model registry
-- Centralized configuration with environment variables
-- Async request handling and engine lifecycle management
-- Repository scanning with incremental indexing support
-- Tree-sitter AST extraction for Python, TypeScript, JavaScript, Go, and Rust
-- Symbol graph construction with `networkx`
-- Local embeddings with `BAAI/bge-small-en-v1.5`
-- Local vector storage with Qdrant
-- Hybrid retrieval, context building, and planning primitives
-- Clean separation between API, config, core utilities, and LLM runtime
-- Prepared boundaries for future orchestration, memory, and repo intelligence layers
+* autonomous planning
+* multi-role cognition
+* runtime lifecycle management
+* repository-aware reasoning
+* patch generation
+* convergence analysis
+* execution/test loops
 
-## Structure
+into a unified autonomous engineering system.
+
+---
+
+# Vision
+
+Forge aims to evolve into a repository-aware autonomous engineering agent comparable to systems such as:
+
+* OpenAI Codex
+* Claude Code
+* Devin-style engineering agents
+
+while remaining:
+
+* self-hosted
+* modular
+* runtime-controlled
+* architecture-aware
+* GPU-efficient
+
+---
+
+# Core Capabilities
+
+## Autonomous Cognition
+
+Forge supports:
+
+* role-based reasoning
+* multi-stage execution
+* artifact persistence
+* cognition replay
+* convergence analysis
+* retry/recovery workflows
+
+---
+
+## Sequential Multi-Model Orchestration
+
+Forge uses:
+
+* one GPU
+* sequential runtime swaps
+* isolated vLLM runtimes
+
+instead of simultaneous multi-model execution.
+
+Supported roles:
+
+* PRIMARY_CODER
+* DEEPSEEK_SYNTH
+* JUDGE
+
+---
+
+## Runtime Lifecycle Control
+
+Forge automatically:
+
+* launches runtimes
+* health-checks models
+* performs inference
+* swaps runtimes
+* terminates process groups
+* cleans VRAM
+* recovers from failures
+
+---
+
+# System Architecture
+
+```mermaid
+graph TD
+
+A[Objective Input]
+--> B[Convergence Loop]
+
+B --> C[PRIMARY_CODER]
+C --> D[Artifact Store]
+
+D --> E[DEEPSEEK_SYNTH]
+E --> F[Artifact Store]
+
+F --> G[JUDGE]
+G --> H[Convergence Analysis]
+
+H --> I{Converged?}
+
+I -- No --> B
+I -- Yes --> J[Patch Writer]
+
+J --> K[Test Execution]
+
+K --> L{Tests Pass?}
+
+L -- No --> B
+L -- Yes --> M[Autonomous Success]
+```
+
+---
+
+# Runtime Orchestration
+
+```mermaid
+sequenceDiagram
+
+participant Forge
+participant Launcher
+participant Runtime
+participant GPU
+
+Forge->>Launcher: Launch PRIMARY_CODER
+Launcher->>Runtime: Start vLLM
+Runtime->>GPU: Allocate VRAM
+
+Forge->>Runtime: Inference Request
+Runtime-->>Forge: Cognition Output
+
+Forge->>Runtime: Shutdown
+Runtime->>GPU: Release VRAM
+
+Forge->>Launcher: Launch DEEPSEEK_SYNTH
+Launcher->>Runtime: Start vLLM
+
+Forge->>Runtime: Inference Request
+Runtime-->>Forge: Synthesis Output
+
+Forge->>Runtime: Shutdown
+
+Forge->>Launcher: Launch JUDGE
+Launcher->>Runtime: Start vLLM
+
+Forge->>Runtime: Inference Request
+Runtime-->>Forge: Judgment Output
+```
+
+---
+
+# Repository Cognition Layer
+
+Forge includes repository-aware reasoning primitives.
+
+Capabilities:
+
+* dependency graphs
+* impact analysis
+* mutation blast-radius estimation
+* architecture boundary enforcement
+* module-level cognition prioritization
+
+---
+
+# Repository Cognition Flow
+
+```mermaid
+graph LR
+
+A[Repository Scan]
+--> B[Dependency Graph]
+
+B --> C[Impact Analysis]
+
+C --> D[Blast Radius Estimation]
+
+D --> E[Mutation Constraints]
+
+E --> F[Patch Generation]
+
+F --> G[Validation]
+```
+
+---
+
+# Runtime Components
+
+| Component           | Purpose                              |
+| ------------------- | ------------------------------------ |
+| RuntimeLauncher     | Starts vLLM runtimes                 |
+| RuntimeShutdown     | Terminates runtime process groups    |
+| RuntimeSwapEngine   | Sequential runtime orchestration     |
+| RuntimeHealth       | Runtime readiness validation         |
+| LocalInference      | OpenAI-compatible inference client   |
+| AutonomousCourtroom | Multi-role cognition execution       |
+| ConvergenceLoop     | Autonomous retry/convergence control |
+| ArtifactStore       | Persistent cognition persistence     |
+
+---
+
+# Runtime Process Lifecycle
+
+```mermaid
+stateDiagram-v2
+
+[*] --> Created
+
+Created --> Launching
+Launching --> Healthy
+
+Healthy --> Inference
+
+Inference --> ShutdownRequested
+
+ShutdownRequested --> CleaningVRAM
+
+CleaningVRAM --> Terminated
+
+Terminated --> [*]
+```
+
+---
+
+# Current Execution Strategy
+
+Forge currently uses:
+
+* sequential runtime swaps
+* one active model at a time
+* vLLM OpenAI-compatible serving
+* process-group cleanup
+* artifact-based cognition exchange
+
+This design prioritizes:
+
+* VRAM safety
+* deterministic orchestration
+* scalable runtime control
+
+over raw latency.
+
+---
+
+# Current Limitations
+
+Because Forge runs:
+
+* multiple heavyweight models
+* on a single GPU
+* through sequential runtime swapping
+
+runtime transitions are intentionally slower than always-on systems.
+
+Current stabilization focus:
+
+* orchestration reliability
+* runtime cleanup correctness
+* deterministic role progression
+* output schema consistency
+* recovery handling
+
+---
+
+# Project Structure
 
 ```text
 backend/
-  api/         HTTP routes and request/response schemas
-  config/      Centralized settings
-  core/        Logging and error handling
-  llm/         vLLM engine lifecycle and chat service
-  repointel/   Repository intelligence engine
-  app.py       FastAPI application entrypoint
+│
+├── runtime/
+│   ├── autonomous_courtroom.py
+│   ├── autonomous_run.py
+│   ├── convergence_loop.py
+│   ├── runtime_launcher.py
+│   ├── runtime_shutdown.py
+│   ├── runtime_swap_engine.py
+│   ├── runtime_health.py
+│   ├── runtime_process.py
+│   ├── local_inference.py
+│   ├── artifact_store.py
+│   ├── artifact_loader.py
+│   ├── repo_graph.py
+│   ├── repo_analysis.py
+│   ├── repo_boundary.py
+│   └── ...
+│
 tests/
-  test_chat_api.py
+│
+run_forge.py
 ```
 
-## Run
+---
+
+# Execution Flow
 
 ```bash
-cp .env.example .env
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port 8000
+python run_forge.py
 ```
 
-## Test
+Forge then:
 
-```bash
-.venv/bin/pytest
-```
+1. launches PRIMARY_CODER
+2. performs coding cognition
+3. swaps runtime
+4. launches DEEPSEEK_SYNTH
+5. performs synthesis cognition
+6. swaps runtime
+7. launches JUDGE
+8. evaluates convergence
+9. writes patch
+10. runs tests
+11. retries if necessary
 
-## Example Requests
+---
 
-Non-streaming:
+# Hardware Target
 
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "deepseek-coder",
-    "agent_id": "planner-agent",
-    "messages": [
-      {"role": "system", "content": "You are a coding assistant."},
-      {"role": "user", "content": "Write a Python function to merge two sorted lists."}
-    ],
-    "temperature": 0.2,
-    "top_p": 0.95,
-    "max_tokens": 512
-  }'
-```
+Optimized for:
 
-Streaming:
+* RTX 5090
+* CUDA 13+
+* Python 3.12
+* WSL2
+* vLLM
 
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -N \
-  -d '{
-    "model": "deepseek-coder",
-    "messages": [
-      {"role": "user", "content": "Write a Rust function that validates a JWT."}
-    ],
-    "stream": true
-  }'
-```
+---
 
-Repository intelligence benchmark:
+# Long-Term Goals
 
-```bash
-.venv/bin/python benchmarks/repointel_benchmark.py /path/to/repo "where is auth middleware initialized?"
-```
+Planned future layers:
 
-Repository intelligence verification:
+* web frontend
+* live orchestration dashboard
+* artifact visualization
+* diff viewers
+* repo navigation
+* autonomous PR generation
+* persistent runtime pools
+* distributed multi-GPU execution
+* architecture-aware patch validation
+* autonomous repo exploration
 
-```bash
-.venv/bin/python scripts/verify_repo_intelligence.py --repo-root /path/to/repo
-```
+---
 
-Repository intelligence smoke test:
+# Status
 
-```bash
-.venv/bin/python scripts/smoke_test_repo_intel.py --repo-root /path/to/repo
-```
+Forge currently supports:
 
-Multi-agent runtime smoke test:
+* autonomous runtime orchestration
+* cognition artifact persistence
+* convergence analysis
+* repository cognition
+* sequential multi-model execution
+* autonomous patch/test loops
 
-```bash
-.venv/bin/python scripts/smoke_test_multi_agent_runtime.py --repo-root /path/to/repo
-```
+and is now entering:
 
-Multi-agent runtime benchmark:
+* orchestration stabilization
+* runtime optimization
+* frontend development
 
-```bash
-.venv/bin/python benchmarks/multi_agent_runtime_benchmark.py --task-count 10
-```
-
-Multi-agent runtime demo:
-
-```bash
-.venv/bin/python scripts/run_orchestration_demo.py
-```
-
-Multi-agent runtime architecture:
-
-`backend/runtime/agents.py`: base agent abstraction, identity, capabilities, lifecycle hooks, structured execution.
-`backend/runtime/messages.py`: typed inter-agent protocol payloads.
-`backend/runtime/tasks.py`: task IDs, dependencies, retries, priorities, timestamps, status tracking.
-`backend/runtime/events.py`: async event bus and runtime event types.
-`backend/runtime/context.py`: shared context snapshots and token-aware context packaging with repository-intelligence integration.
-`backend/runtime/patches.py`: structured patch and risk representation.
-`backend/runtime/results.py`: candidate aggregation for future judge agents.
-`backend/runtime/diagnostics.py`: agent/task/concurrency metrics.
-`backend/runtime/orchestrator.py`: async scheduler, dependency resolution, cancellation, timeout handling, result/event aggregation.
-`backend/runtime/mock_agents.py`: mock planner/coder/critic/context agents for orchestration verification.
-`backend/runtime/api.py`: developer-facing runtime facade.
-
-Canonical developer interfaces:
-
-```python
-import asyncio
-
-from backend.repointel import (
-    ContextBuilder,
-    EmbeddingService,
-    PlanningLayer,
-    RepositoryIntelligenceEngine,
-    TreeSitterParser,
-)
-
-
-async def main() -> None:
-    parser = TreeSitterParser()
-    print(parser.validate_languages())
-
-    embeddings = EmbeddingService()
-    print(await embeddings.validate_startup())
-
-    engine = RepositoryIntelligenceEngine()
-    print(await engine.verify_runtime())
-
-    # After indexing a repository, the public subsystem interfaces are reusable.
-    await engine.index_repository("/path/to/repo")
-    context = await engine.context_builder.build("where is auth middleware initialized?")
-    plan = await engine.planner.plan("add caching to auth middleware")
-    print(context.related_files)
-    print(plan.impacted_files)
-    await engine.shutdown()
-
-
-asyncio.run(main())
-```
+---
