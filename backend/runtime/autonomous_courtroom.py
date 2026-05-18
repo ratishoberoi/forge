@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from backend.runtime.artifact import CognitionArtifact
 from backend.runtime.artifact_exchange import ArtifactExchange
 from backend.runtime.local_inference import LocalInference
+from backend.runtime.runtime_health import RuntimeHealth
 from backend.runtime.runtime_process import RuntimeProcess
 from backend.runtime.runtime_swap_engine import RuntimeSwapEngine
 
@@ -18,25 +19,28 @@ class AutonomousCourtroom:
         PRIMARY_CODER  → generates patch strategy via real LLM
         DEEPSEEK_SYNTH → critiques architecture via real LLM
         JUDGE          → evaluates convergence via real LLM
-    Responsibilities:
-    - swap runtimes in correct sequence
-    - call real inference per stage
-    - persist each cognition artifact via exchange
-    - shutdown active runtime after round completes
-    - return ordered artifact list
+    Key architecture:
+    - ALL runtimes share port 8000
+    - Previous runtime shuts down before next launches
+    - RuntimeHealth waits until port ready before inferring
+    - No assumption of pre-running servers
     """
 
     CODER_ROLE = "PRIMARY_CODER"
     SYNTH_ROLE = "DEEPSEEK_SYNTH"
     JUDGE_ROLE = "JUDGE"
 
-    CODER_PORT = 8000
-    SYNTH_PORT = 8002
-    JUDGE_PORT = 8001
+    SHARED_PORT = 8000
+    BOOT_TIMEOUT = 300
 
-    CODER_MODEL = "qwen-primary"
-    SYNTH_MODEL = "deepseek-synth"
-    JUDGE_MODEL = "qwen-judge"
+    CODER_MODEL_PATH = "~/Forge/models/qwen-primary"
+    CODER_MODEL_NAME = "qwen-primary"
+
+    SYNTH_MODEL_PATH = "~/Forge/models/deepseek-synth"
+    SYNTH_MODEL_NAME = "deepseek-synth"
+
+    JUDGE_MODEL_PATH = "~/Forge/models/qwen-judge"
+    JUDGE_MODEL_NAME = "qwen-judge"
 
     def __init__(
         self,
@@ -44,22 +48,27 @@ class AutonomousCourtroom:
         swap_engine: RuntimeSwapEngine,
         exchange: ArtifactExchange,
         inference: LocalInference,
-        coder_model: str = CODER_MODEL,
-        synth_model: str = SYNTH_MODEL,
-        judge_model: str = JUDGE_MODEL,
-        coder_port: int = CODER_PORT,
-        synth_port: int = SYNTH_PORT,
-        judge_port: int = JUDGE_PORT,
+        coder_model_path: str = CODER_MODEL_PATH,
+        coder_model_name: str = CODER_MODEL_NAME,
+        synth_model_path: str = SYNTH_MODEL_PATH,
+        synth_model_name: str = SYNTH_MODEL_NAME,
+        judge_model_path: str = JUDGE_MODEL_PATH,
+        judge_model_name: str = JUDGE_MODEL_NAME,
+        port: int = SHARED_PORT,
+        boot_timeout: int = BOOT_TIMEOUT,
     ) -> None:
         self.swap_engine = swap_engine
         self.exchange = exchange
         self.inference = inference
-        self.coder_model = coder_model
-        self.synth_model = synth_model
-        self.judge_model = judge_model
-        self.coder_port = coder_port
-        self.synth_port = synth_port
-        self.judge_port = judge_port
+        self.coder_model_path = coder_model_path
+        self.coder_model_name = coder_model_name
+        self.synth_model_path = synth_model_path
+        self.synth_model_name = synth_model_name
+        self.judge_model_path = judge_model_path
+        self.judge_model_name = judge_model_name
+        self.port = port
+        self.boot_timeout = boot_timeout
+        self.health = RuntimeHealth()
 
     def execute(
         self,
@@ -70,9 +79,9 @@ class AutonomousCourtroom:
         """
         Execute a full courtroom cognition round with real inference.
         Stages:
-        1. PRIMARY_CODER  — patch generation
-        2. DEEPSEEK_SYNTH — architecture critique
-        3. JUDGE          — convergence verdict
+        1. PRIMARY_CODER  — swap in, wait ready, generate patch
+        2. DEEPSEEK_SYNTH — swap in, wait ready, critique patch
+        3. JUDGE          — swap in, wait ready, evaluate verdict
         Returns ordered list of 3 CognitionArtifacts.
         """
         if not objective.strip():
@@ -81,24 +90,30 @@ class AutonomousCourtroom:
         artifacts: list[CognitionArtifact] = []
 
         # ── Stage 1: PRIMARY_CODER ────────────────────────────────────────────
-        coder_artifact = self._run_stage(
+        self._activate_runtime(
             role=self.CODER_ROLE,
-            model=self.coder_model,
-            port=self.coder_port,
+            model_path=self.coder_model_path,
+            model_name=self.coder_model_name,
+        )
+        coder_artifact = self._infer_and_persist(
+            role=self.CODER_ROLE,
+            model_name=self.coder_model_name,
             artifact_id=f"coder_round_{round_id}",
             round_id=round_id,
             objective=objective,
-            prompt=(
-                f"Generate an implementation strategy for: {objective}"
-            ),
+            prompt=f"Generate an implementation strategy for: {objective}",
         )
         artifacts.append(coder_artifact)
 
         # ── Stage 2: DEEPSEEK_SYNTH ───────────────────────────────────────────
-        synth_artifact = self._run_stage(
+        self._activate_runtime(
             role=self.SYNTH_ROLE,
-            model=self.synth_model,
-            port=self.synth_port,
+            model_path=self.synth_model_path,
+            model_name=self.synth_model_name,
+        )
+        synth_artifact = self._infer_and_persist(
+            role=self.SYNTH_ROLE,
+            model_name=self.synth_model_name,
             artifact_id=f"synth_round_{round_id}",
             round_id=round_id,
             objective=objective,
@@ -111,10 +126,14 @@ class AutonomousCourtroom:
         artifacts.append(synth_artifact)
 
         # ── Stage 3: JUDGE ────────────────────────────────────────────────────
-        judge_artifact = self._run_stage(
+        self._activate_runtime(
             role=self.JUDGE_ROLE,
-            model=self.judge_model,
-            port=self.judge_port,
+            model_path=self.judge_model_path,
+            model_name=self.judge_model_name,
+        )
+        judge_artifact = self._infer_and_persist(
+            role=self.JUDGE_ROLE,
+            model_name=self.judge_model_name,
             artifact_id=f"judge_round_{round_id}",
             round_id=round_id,
             objective=objective,
@@ -131,7 +150,7 @@ class AutonomousCourtroom:
         )
         artifacts.append(judge_artifact)
 
-        # Shutdown active runtime after round completes
+        # Shutdown final active runtime after round completes
         self.swap_engine.shutdown_active()
 
         return artifacts
@@ -147,8 +166,9 @@ class AutonomousCourtroom:
         Each round's artifacts are persisted for next round's context.
         """
         if rounds < 1:
-            raise AutonomousCourtroomError(f"rounds must be >= 1, got {rounds}.")
-
+            raise AutonomousCourtroomError(
+                f"rounds must be >= 1, got {rounds}."
+            )
         all_rounds: list[list[CognitionArtifact]] = []
         for round_id in range(1, rounds + 1):
             round_artifacts = self.execute(
@@ -160,29 +180,59 @@ class AutonomousCourtroom:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _run_stage(
+    def _activate_runtime(
         self,
         *,
         role: str,
-        model: str,
-        port: int,
+        model_path: str,
+        model_name: str,
+    ) -> RuntimeProcess:
+        """
+        Swap in next runtime and wait until ready.
+        Previous runtime shut down by swap_engine before launch.
+        Raises AutonomousCourtroomError if runtime does not boot in time.
+        """
+        process = RuntimeProcess(
+            role=role,
+            model_path=model_path,
+            model_name=model_name,
+            port=self.port,
+        )
+
+        self.swap_engine.swap(process)
+
+        ready = self.health.wait_until_ready(
+            port=self.port,
+            timeout=self.boot_timeout,
+        )
+
+        if not ready:
+            raise AutonomousCourtroomError(
+                f"Runtime failed to become ready "
+                f"for role='{role}' on port {self.port} "
+                f"within {self.boot_timeout}s."
+            )
+
+        return process
+
+    def _infer_and_persist(
+        self,
+        *,
+        role: str,
+        model_name: str,
         artifact_id: str,
         round_id: int,
         objective: str,
         prompt: str,
         metadata: dict | None = None,
     ) -> CognitionArtifact:
-        """Swap runtime, call inference, build artifact, persist, return."""
-        process = RuntimeProcess(
-            role=role,
-            model=f"~/Forge/models/{model}",
-            port=port,
-        )
-        self.swap_engine.swap(process)
-
+        """
+        Call inference on currently active runtime, build artifact, persist.
+        Uses explicit model_name — no more role-to-name mapping needed.
+        """
         content = self.inference.infer(
-            port=port,
-            model=model,
+            port=self.port,
+            model=model_name,
             prompt=prompt,
         )
 
@@ -195,5 +245,6 @@ class AutonomousCourtroom:
             created_at=datetime.now(timezone.utc),
             metadata=metadata or {},
         )
+
         self.exchange.persist(artifact)
         return artifact

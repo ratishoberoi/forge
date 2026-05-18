@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from backend.runtime.runtime_launcher import RuntimeLauncher
 from backend.runtime.runtime_process import RuntimeProcess
 from backend.runtime.runtime_shutdown import RuntimeShutdown
@@ -10,70 +11,76 @@ class RuntimeSwapError(Exception):
 
 class RuntimeSwapEngine:
     """
-    Orchestrates sequential runtime lifecycle swaps.
-    Pattern:
-        spawn runtime
-        → execute cognition
-        → persist artifact
-        → shutdown runtime
-        → spawn next runtime
-
-    Responsibilities:
-    - track active process
-    - shutdown current before launching next
-    - maintain swap history
-    - enforce single-active invariant
+    Real sequential heavyweight runtime orchestration.
+    Guarantees:
+    - only one heavyweight runtime active at a time
+    - previous runtime shutdown before next launch
+    - VRAM cleanup wait between swaps
+    - swap history preserved
     """
 
     def __init__(
         self,
         launcher: RuntimeLauncher,
         shutdown: RuntimeShutdown,
+        swap_delay_seconds: float = 5.0,
     ) -> None:
         self.launcher = launcher
         self.shutdown_manager = shutdown
+        self.swap_delay_seconds = swap_delay_seconds
         self.active_process: RuntimeProcess | None = None
         self.swap_history: list[RuntimeProcess] = []
 
     def swap(self, next_process: RuntimeProcess) -> RuntimeProcess:
         """
-        Shutdown current process (if any) and launch next.
-        Returns the newly launched RuntimeProcess.
+        Shutdown current runtime, wait for VRAM cleanup,
+        then launch next runtime.
         """
         if self.active_process is not None:
-            self.shutdown_manager.shutdown(self.active_process)
-            self.swap_history.append(self.active_process)
+            try:
+                self.shutdown_manager.shutdown(self.active_process)
+                self.swap_history.append(self.active_process)
+                time.sleep(self.swap_delay_seconds)
+            except Exception as exc:
+                raise RuntimeSwapError(
+                    f"Failed to shutdown runtime for "
+                    f"role={self.active_process.role}: {exc}"
+                ) from exc
 
-        launched = self.launcher.launch(next_process)
+        try:
+            launched = self.launcher.launch(next_process)
+        except Exception as exc:
+            raise RuntimeSwapError(
+                f"Failed to launch runtime for "
+                f"role={next_process.role}: {exc}"
+            ) from exc
+
         self.active_process = launched
         return launched
 
     def shutdown_active(self) -> None:
-        """
-        Shutdown the currently active process without launching a replacement.
-        No-op if no active process.
-        """
+        """Shutdown active runtime without replacement."""
         if self.active_process is None:
             return
-        self.shutdown_manager.shutdown(self.active_process)
-        self.swap_history.append(self.active_process)
-        self.active_process = None
+
+        try:
+            self.shutdown_manager.shutdown(self.active_process)
+            self.swap_history.append(self.active_process)
+            time.sleep(self.swap_delay_seconds)
+        finally:
+            self.active_process = None
 
     @property
     def has_active(self) -> bool:
-        """True if there is a currently active process."""
         return self.active_process is not None
 
     @property
     def swap_count(self) -> int:
-        """Number of swaps performed so far."""
         return len(self.swap_history)
 
     @property
     def active_role(self) -> str | None:
-        """Role of the currently active process, or None."""
         return self.active_process.role if self.active_process else None
 
     def history_roles(self) -> list[str]:
-        """Ordered list of roles that have been swapped out."""
         return [p.role for p in self.swap_history]

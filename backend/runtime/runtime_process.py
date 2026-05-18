@@ -11,7 +11,8 @@ class RuntimeProcess:
     Tracks lifecycle state from spawn to shutdown.
     """
     role: str
-    model: str
+    model_path: str
+    model_name: str
     port: int
     pid: int | None = None
     active: bool = False
@@ -21,8 +22,10 @@ class RuntimeProcess:
     def __post_init__(self) -> None:
         if not self.role:
             raise ValueError("role must not be empty.")
-        if not self.model:
-            raise ValueError("model must not be empty.")
+        if not self.model_path:
+            raise ValueError("model_path must not be empty.")
+        if not self.model_name:
+            raise ValueError("model_name must not be empty.")
         if not (1024 <= self.port <= 65535):
             raise ValueError(
                 f"port must be between 1024 and 65535, got {self.port}."
@@ -58,7 +61,8 @@ class RuntimeProcess:
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
-            "model": self.model,
+            "model_path": self.model_path,
+            "model_name": self.model_name,
             "port": self.port,
             "pid": self.pid,
             "active": self.active,

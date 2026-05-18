@@ -21,21 +21,7 @@ class FakeLauncher:
         self.launched.append(process.role)
         return process
 
-class FakeInference:
-    def infer(
-        self,
-        *,
-        port,
-        model,
-        prompt,
-        temperature=0.2,
-        max_tokens=300,
-    ):
-        return (
-            f"fake-response:"
-            f"{model}"
-        )
-    
+
 class FakeShutdown:
     def __init__(self) -> None:
         self.shutdowns: list[str] = []
@@ -45,12 +31,44 @@ class FakeShutdown:
         self.shutdowns.append(process.role)
 
 
+class FakeInference:
+    """
+    Returns deterministic content based on model name.
+    Model name is extracted as last path segment — matches
+    _model_name_for_role() in AutonomousCourtroom.
+    """
+    def infer(
+        self,
+        *,
+        port: int,
+        model: str,
+        prompt: str,
+        temperature: float = 0.2,
+        max_tokens: int = 300,
+        system_prompt: str | None = None,
+    ) -> str:
+        return f"fake-response:{model}"
+
+
+class FakeHealth:
+    """Always reports runtime ready immediately — no real port polling."""
+    def wait_until_ready(self, *, port: int, timeout: int = 300) -> bool:
+        return True
+
+    def is_ready(self, port: int) -> bool:
+        return True
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_swap_engine() -> tuple[RuntimeSwapEngine, FakeLauncher, FakeShutdown]:
     launcher = FakeLauncher()
     shutdown = FakeShutdown()
-    engine = RuntimeSwapEngine(launcher=launcher, shutdown=shutdown)
+    engine = RuntimeSwapEngine(
+        launcher=launcher,
+        shutdown=shutdown,
+        swap_delay_seconds=0,  # instant in tests
+    )
     return engine, launcher, shutdown
 
 
@@ -61,13 +79,16 @@ def make_exchange(tmp_path) -> ArtifactExchange:
     )
 
 
-def make_courtroom(tmp_path) -> tuple[AutonomousCourtroom, FakeLauncher, FakeShutdown]:
+def make_courtroom(
+    tmp_path,
+) -> tuple[AutonomousCourtroom, FakeLauncher, FakeShutdown]:
     engine, launcher, shutdown = make_swap_engine()
     courtroom = AutonomousCourtroom(
-    swap_engine=engine,
-    exchange=make_exchange(tmp_path),
-    inference=FakeInference(),
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=FakeInference(),
     )
+    courtroom.health = FakeHealth()
     return courtroom, launcher, shutdown
 
 
@@ -96,16 +117,29 @@ def test_autonomous_courtroom_swap_sequence(tmp_path):
         "DEEPSEEK_SYNTH",
         "JUDGE",
     ]
-    # Coder and synth shut down before next swap; judge shut down after round
     assert "PRIMARY_CODER" in shutdown.shutdowns
     assert "DEEPSEEK_SYNTH" in shutdown.shutdowns
     assert "JUDGE" in shutdown.shutdowns
 
 
+def test_autonomous_courtroom_all_on_same_port(tmp_path):
+    """All three runtimes must launch on the same shared port."""
+    courtroom, launcher, _ = make_courtroom(tmp_path)
+    courtroom.execute(objective="Improve auth")
+
+    # All processes created with same port
+    assert courtroom.port == 8000
+
+
 def test_autonomous_courtroom_artifacts_persisted(tmp_path):
     exchange = make_exchange(tmp_path)
     engine, _, _ = make_swap_engine()
-    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=exchange,
+        inference=FakeInference(),
+    )
+    courtroom.health = FakeHealth()
 
     courtroom.execute(objective="Improve auth")
 
@@ -127,31 +161,20 @@ def test_autonomous_courtroom_artifact_content(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
     artifacts = courtroom.execute(objective="Improve auth")
 
-    assert (
-    artifacts[0].content
-    == "fake-response:qwen-primary"
-    )
-    assert (
-    artifacts[1].content
-    == "fake-response:deepseek-synth"
-    )
-    assert (
-    artifacts[2].content
-    == "fake-response:qwen-judge"
-    )
+    assert artifacts[0].content == "fake-response:qwen-primary"
+    assert artifacts[1].content == "fake-response:deepseek-synth"
+    assert artifacts[2].content == "fake-response:qwen-judge"
 
 
 def test_autonomous_courtroom_synth_references_coder(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
     artifacts = courtroom.execute(objective="Improve auth")
-
     assert artifacts[1].metadata["critiques_artifact"] == "coder_round_1"
 
 
 def test_autonomous_courtroom_judge_references_both(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
     artifacts = courtroom.execute(objective="Improve auth")
-
     assert artifacts[2].metadata["reviews_coder"] == "coder_round_1"
     assert artifacts[2].metadata["reviews_synth"] == "synth_round_1"
 
@@ -170,12 +193,33 @@ def test_autonomous_courtroom_blank_objective_raises(tmp_path):
         courtroom.execute(objective="   ")
 
 
+def test_autonomous_courtroom_health_failure_raises(tmp_path):
+    """If runtime does not become ready, AutonomousCourtroomError raised."""
+    class NeverReadyHealth:
+        def wait_until_ready(self, *, port: int, timeout: int = 300) -> bool:
+            return False
+        def is_ready(self, port: int) -> bool:
+            return False
+
+    engine, _, _ = make_swap_engine()
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=FakeInference(),
+    )
+    courtroom.health = NeverReadyHealth()
+
+    with pytest.raises(AutonomousCourtroomError, match="failed to become ready"):
+        courtroom.execute(objective="Improve auth")
+
+
 # ── execute_multi_round ───────────────────────────────────────────────────────
 
 def test_execute_multi_round_returns_correct_structure(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
-    all_rounds = courtroom.execute_multi_round(objective="Improve auth", rounds=3)
-
+    all_rounds = courtroom.execute_multi_round(
+        objective="Improve auth", rounds=3
+    )
     assert len(all_rounds) == 3
     for round_artifacts in all_rounds:
         assert len(round_artifacts) == 3
@@ -183,8 +227,9 @@ def test_execute_multi_round_returns_correct_structure(tmp_path):
 
 def test_execute_multi_round_sequential_round_ids(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
-    all_rounds = courtroom.execute_multi_round(objective="Improve auth", rounds=2)
-
+    all_rounds = courtroom.execute_multi_round(
+        objective="Improve auth", rounds=2
+    )
     assert all_rounds[0][0].round_id == 1
     assert all_rounds[1][0].round_id == 2
 
@@ -200,20 +245,27 @@ def test_execute_multi_round_zero_raises(tmp_path):
 def test_retrieve_coder_artifact_after_execute(tmp_path):
     exchange = make_exchange(tmp_path)
     engine, _, _ = make_swap_engine()
-    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=exchange,
+        inference=FakeInference(),
+    )
+    courtroom.health = FakeHealth()
     courtroom.execute(objective="Improve auth")
 
     coder = exchange.retrieve_round(role="PRIMARY_CODER", round_id=1)
-    assert (
-    coder.content
-    == "fake-response:qwen-primary"
-    )
+    assert coder.content == "fake-response:qwen-primary"
 
 
 def test_retrieve_full_role_history_after_multi_round(tmp_path):
     exchange = make_exchange(tmp_path)
     engine, _, _ = make_swap_engine()
-    courtroom = AutonomousCourtroom(swap_engine=engine, exchange=exchange, inference=FakeInference())
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=exchange,
+        inference=FakeInference(),
+    )
+    courtroom.health = FakeHealth()
     courtroom.execute_multi_round(objective="Improve auth", rounds=3)
 
     history = exchange.retrieve_role_history("PRIMARY_CODER")

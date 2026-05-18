@@ -10,6 +10,7 @@ from backend.runtime.execution_result import ExecutionResult
 from backend.runtime.execution_runner import ExecutionRunner
 from backend.runtime.git_diff import GitDiff
 from backend.runtime.local_inference import LocalInference
+from backend.runtime.patch_parser import PatchParser
 from backend.runtime.patch_writer import PatchWriter, PatchResult
 from backend.runtime.repo_workspace import RepositoryWorkspace
 from backend.runtime.revision_judge import RevisionJudge
@@ -28,10 +29,11 @@ class AutonomousRun:
     Integrated autonomous repository execution.
     Full pipeline:
     1. Convergence loop generates cognition artifacts
-    2. Best patch written to target file
-    3. Test command executed against repo
-    4. Feedback printed for inspection
-    5. Git diff shown for review
+    2. Patch parser extracts clean code from model response
+    3. Patch written to target file
+    4. Test command executed against repo
+    5. Feedback printed for inspection
+    6. Git diff shown for review
     """
 
     def __init__(
@@ -70,6 +72,7 @@ class AutonomousRun:
         self.runner = ExecutionRunner()
         self.feedback = ExecutionFeedback()
         self.git = GitDiff(repo_root=repo_root)
+        self.patch_parser = PatchParser()
 
     def execute(
         self,
@@ -83,9 +86,10 @@ class AutonomousRun:
         Run full autonomous execution pipeline.
         Stages:
         1. Convergence loop — generate + refine patch
-        2. Write patch to target_file
-        3. Run test_command
-        4. Print feedback + git diff
+        2. Parse clean code from coder artifact
+        3. Write patch to target_file
+        4. Run test_command
+        5. Print feedback + git diff
         """
         self._print_header("AUTONOMOUS RUN START")
         print(f"Objective : {objective}")
@@ -101,7 +105,7 @@ class AutonomousRun:
         )
         self._print_convergence_summary(result)
 
-        # Stage 2: Write patch
+        # Stage 2: Parse + write patch
         self._print_header("STAGE 2 — PATCH WRITE")
         patch_result = self._write_patch(result, target_file)
         if not patch_result.success:
@@ -167,7 +171,10 @@ class AutonomousRun:
             "iterations_run": convergence.iterations_run,
             "final_verdict": convergence.final_verdict,
             "patch_success": patch_result.success,
-            "patch_path": str(patch_result.resolved_path) if patch_result.resolved_path else None,
+            "patch_path": (
+                str(patch_result.resolved_path)
+                if patch_result.resolved_path else None
+            ),
             "tests_passed": exec_result.succeeded,
             "return_code": exec_result.return_code,
             "feedback": feedback_text,
@@ -184,7 +191,10 @@ class AutonomousRun:
         result: ConvergenceResult,
         target_file: str,
     ) -> PatchResult:
-        """Extract coder artifact from latest round and write to target."""
+        """
+        Extract coder artifact from latest round,
+        parse clean code, write to target file.
+        """
         latest_round = result.final_round
         if not latest_round:
             return PatchResult(
@@ -192,10 +202,22 @@ class AutonomousRun:
                 success=False,
                 error="No artifacts in final round.",
             )
+
         coder_artifact = latest_round[0]
+        generated_content = self.patch_parser.extract_code(
+            coder_artifact.content
+        )
+
+        if not generated_content.strip():
+            return PatchResult(
+                file_path=target_file,
+                success=False,
+                error="Patch parser returned empty content.",
+            )
+
         return self.writer.apply(
             file_path=target_file,
-            new_content=coder_artifact.content,
+            new_content=generated_content,
         )
 
     @staticmethod
