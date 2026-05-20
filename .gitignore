@@ -35,3 +35,13 @@ qdrant_storage/
 # OS
 .DS_Store
 Thumbs.db.forge/
+
+# Forge runtime state
+.forge/
+
+# Next.js
+frontend/.next/
+
+# Node
+frontend/node_modules/
+
