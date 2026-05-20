@@ -6,22 +6,36 @@ import {
   Archive,
   Bot,
   Brain,
-  CheckCircle2,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Circle,
   Clock,
   Code2,
+  Command,
   Database,
   FileCode2,
+  Folder,
   FolderOpen,
   GitBranch,
+  GitCommit,
   GitCompare,
+  History,
+  LayoutDashboard,
   ListChecks,
+  Loader2,
+  MemoryStick,
   Network,
   Pause,
   Play,
   RefreshCw,
   Search,
+  Settings,
+  Sparkles,
   Square,
   Terminal,
+  TestTube2,
+  X,
   XCircle
 } from "lucide-react";
 import {
@@ -45,15 +59,37 @@ import {
   switchRepository,
   validateRepositoryPath
 } from "@/lib/api";
-import { Badge, Button, Card, CardHeader, Input, Textarea } from "@/components/ui";
+import { Button, Input, Textarea } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 const defaultRepo = "/home/ratish/Forge";
 
+const phases = [
+  "REPOSITORY_SCAN",
+  "PLANNING",
+  "CODER",
+  "SYNTH",
+  "JUDGE",
+  "PATCH",
+  "TESTS",
+  "REPAIR"
+];
+
+const promptTemplates = [
+  "Build a complete FastAPI Todo application.",
+  "Add OAuth login with tests.",
+  "Create an admin dashboard.",
+  "Fix all failing tests.",
+  "Refactor authentication into service modules."
+];
+
+type RightTab = "plan" | "files" | "memory" | "logs";
+type DockTab = "logs" | "tests" | "runtime" | "git";
+
 export default function ControlCenterPage() {
   const [repositoryRoot, setRepositoryRoot] = useState(defaultRepo);
   const [targetFile, setTargetFile] = useState("app.py");
-  const [objective, setObjective] = useState("Build a calculator app");
+  const [objective, setObjective] = useState("Build a complete FastAPI Todo application.");
   const [iterations, setIterations] = useState(3);
   const [testCommand, setTestCommand] = useState("pytest -q");
   const [execute, setExecute] = useState(true);
@@ -64,26 +100,60 @@ export default function ControlCenterPage() {
   const [snapshot, setSnapshot] = useState<ControlSnapshot | null>(null);
   const [tree, setTree] = useState<RepoTreeNode | null>(null);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
-  const [artifactQuery, setArtifactQuery] = useState("");
-  const [artifactRole, setArtifactRole] = useState("ALL");
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactSummary | null>(null);
   const [replayEvents, setReplayEvents] = useState<Array<Record<string, unknown>>>([]);
   const [benchmarkSummary, setBenchmarkSummary] = useState<Record<string, unknown> | null>(null);
   const [health, setHealth] = useState<"checking" | "ok" | "degraded" | "failed">("checking");
   const [error, setError] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<RightTab>("plan");
+  const [dockTab, setDockTab] = useState<DockTab>("logs");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [dockHeight, setDockHeight] = useState(300);
   const [apiStats, setApiStats] = useState({
     snapshotLatency: 0,
     healthLatency: 0,
     failures: 0,
     lastRefresh: ""
   });
+
   const activeRun = snapshot?.active_run ?? null;
   const loadedRepositoryRoot = snapshot?.active_repository_root || repositoryRoot;
+  const plan = snapshot?.generated_plan ?? snapshot?.execution_plan ?? null;
+  const phase = activeRun?.phase || (activeRun?.status === "running" ? "CODER" : "IDLE");
+
+  useEffect(() => {
+    const storedSidebar = window.localStorage.getItem("forge.sidebarCollapsed");
+    const storedDock = window.localStorage.getItem("forge.dockHeight");
+    if (storedSidebar) setSidebarCollapsed(storedSidebar === "true");
+    if (storedDock) setDockHeight(Math.max(220, Math.min(520, Number(storedDock))));
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("forge.sidebarCollapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem("forge.dockHeight", String(dockHeight));
+  }, [dockHeight]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+      if (event.key === "Escape") setPaletteOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
     let delay = 2500;
+
     async function load() {
       const started = performance.now();
       try {
@@ -119,6 +189,7 @@ export default function ControlCenterPage() {
         if (!cancelled) timer = window.setTimeout(load, delay);
       }
     }
+
     load();
     return () => {
       cancelled = true;
@@ -130,6 +201,7 @@ export default function ControlCenterPage() {
     let cancelled = false;
     let timer: number | undefined;
     let failures = 0;
+
     async function loadHealth() {
       const started = performance.now();
       try {
@@ -149,6 +221,7 @@ export default function ControlCenterPage() {
         if (!cancelled) timer = window.setTimeout(loadHealth, failures ? Math.min(5000 * 2 ** failures, 30000) : 5000);
       }
     }
+
     loadHealth();
     return () => {
       cancelled = true;
@@ -189,18 +262,12 @@ export default function ControlCenterPage() {
     };
   }, [loadedRepositoryRoot]);
 
-  const filteredArtifacts = useMemo(() => {
+  const latestArtifact = useMemo(() => {
     const artifacts = snapshot?.artifacts ?? [];
-    return artifacts.filter((artifact) => {
-      const roleMatch = artifactRole === "ALL" || artifact.role === artifactRole;
-      const query = artifactQuery.trim().toLowerCase();
-      const queryMatch =
-        !query ||
-        artifact.content.toLowerCase().includes(query) ||
-        artifact.task.toLowerCase().includes(query);
-      return roleMatch && queryMatch;
-    });
-  }, [artifactQuery, artifactRole, snapshot]);
+    return selectedArtifact ?? artifacts[artifacts.length - 1] ?? null;
+  }, [selectedArtifact, snapshot?.artifacts]);
+
+  const generatedFiles = useMemo(() => generatedFileNames(snapshot?.artifacts ?? [], plan), [snapshot?.artifacts, plan]);
 
   async function startRun() {
     const command = testCommand.split(" ").filter(Boolean);
@@ -229,6 +296,7 @@ export default function ControlCenterPage() {
   async function openFile(path: string) {
     const file = await fetchRepoFile(repositoryRoot, path);
     setSelectedFile({ path: file.path, content: file.content });
+    setRightTab("files");
   }
 
   async function importCurrentRepository() {
@@ -301,56 +369,57 @@ export default function ControlCenterPage() {
   }
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-background px-4 py-4">
-      <div className="mx-auto flex max-w-[1800px] min-w-0 flex-col gap-5">
-        <header className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-border bg-panel px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-cyan-950 text-accent">
-              <Terminal size={20} />
-            </div>
-            <div>
-            <h1 className="text-2xl font-semibold tracking-normal">Forge Control Center</h1>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
-              <Badge tone={activeRun ? "accent" : "neutral"}>{activeRun?.status ?? "idle"}</Badge>
-              <Badge tone={health === "ok" ? "success" : health === "failed" ? "danger" : "warning"}>
-                backend {health}
-              </Badge>
-              <span>{snapshot?.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "waiting"}</span>
-              <span>snapshot {apiStats.snapshotLatency}ms</span>
-              <span>health {apiStats.healthLatency}ms</span>
-              <span>last {apiStats.lastRefresh || "pending"}</span>
-            </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => fetchSnapshot(repositoryRoot).then(setSnapshot)}>
-              <RefreshCw size={16} />
-              Refresh
-            </Button>
-          </div>
-        </header>
+    <main className="forge-shell">
+      <CommandPalette
+        open={paletteOpen}
+        objective={objective}
+        setObjective={setObjective}
+        repositoryRoot={repositoryRoot}
+        setRepositoryRoot={setRepositoryRoot}
+        onClose={() => setPaletteOpen(false)}
+        onRun={startRun}
+        onOpenLogs={() => {
+          setDockTab("logs");
+          setPaletteOpen(false);
+        }}
+      />
 
-        {error ? (
-          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-danger">
-            {error}
-          </div>
-        ) : null}
+      <LeftSidebar
+        collapsed={sidebarCollapsed}
+        setCollapsed={setSidebarCollapsed}
+        repositories={snapshot?.repositories ?? []}
+        activeRepository={snapshot?.active_repository}
+        importPath={repositoryImportPath}
+        setImportPath={setRepositoryImportPath}
+        browser={workspaceBrowser}
+        browserError={workspaceError}
+        runHistory={snapshot?.run_history ?? []}
+        objectiveMemory={snapshot?.objective_memory ?? []}
+        knowledgeGraph={snapshot?.knowledge_graph}
+        benchmarkSummary={benchmarkSummary}
+        onBrowse={browseDirectory}
+        onImport={importCurrentRepository}
+        onSelect={selectRepository}
+        onRefresh={refreshActiveRepository}
+        onReplay={openReplay}
+        onBenchmark={runIsolatedBenchmarks}
+      />
 
-        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)_400px]">
-          <section className="flex min-w-0 flex-col gap-5">
-            <WorkspaceBrowser
-              repositories={snapshot?.repositories ?? []}
-              activeRepository={snapshot?.active_repository}
-              importPath={repositoryImportPath}
-              setImportPath={setRepositoryImportPath}
-              browser={workspaceBrowser}
-              browserError={workspaceError}
-              onBrowse={browseDirectory}
-              onImport={importCurrentRepository}
-              onSelect={selectRepository}
-              onRefresh={refreshActiveRepository}
-            />
-            <CommandCenter
+      <section className="workspace-main">
+        <TopBar
+          health={health}
+          activeRun={activeRun}
+          phase={phase}
+          repositoryRoot={loadedRepositoryRoot}
+          apiStats={apiStats}
+          error={error}
+          onRefresh={() => fetchSnapshot(repositoryRoot).then(setSnapshot)}
+          onPalette={() => setPaletteOpen(true)}
+        />
+
+        <div className="workspace-grid">
+          <section className="center-stage">
+            <ObjectiveComposer
               objective={objective}
               setObjective={setObjective}
               repositoryRoot={repositoryRoot}
@@ -364,558 +433,288 @@ export default function ControlCenterPage() {
               execute={execute}
               setExecute={setExecute}
               activeRun={activeRun}
+              classification={snapshot?.objective_classification}
               onStart={startRun}
               onPause={() => runAction("pause")}
               onResume={() => runAction("resume")}
               onStop={() => runAction("stop")}
             />
-            <RepositorySummary
-              summary={snapshot?.repository_summary}
-              architecture={snapshot?.architecture_summary}
-              plan={snapshot?.execution_plan}
-            />
-            <ArchitectureMemoryPanel memory={snapshot?.architecture_memory} compressed={snapshot?.compressed_context} />
-            <ProjectBrainPanel brain={snapshot?.project_brain} semantic={snapshot?.semantic_memory} />
-            <ConvergencePanel convergence={snapshot?.convergence} />
-            <RuntimeMonitor runtime={snapshot?.runtime} />
-            <TestResults tests={snapshot?.tests} />
-            <ProductionValidationPanel
-              bootstrap={snapshot?.bootstrap}
-              acceptance={snapshot?.acceptance}
-              build={snapshot?.build_validation}
-              visual={snapshot?.visual_validation}
-              quality={snapshot?.quality_score}
-              releaseReport={snapshot?.release_report}
-              benchmarkSummary={benchmarkSummary}
-              onBenchmark={runIsolatedBenchmarks}
-            />
+            <ActiveRunPanel activeRun={activeRun} phase={phase} snapshot={snapshot} />
+            <VisualTimeline timeline={snapshot?.timeline ?? []} phase={phase} />
+            <LiveCourtroom roles={snapshot?.courtroom ?? []} runtime={snapshot?.runtime} />
+            <LiveCodeGeneration artifacts={snapshot?.artifacts ?? []} generatedFiles={generatedFiles} onSelect={setSelectedArtifact} />
+            <DiffViewer patch={snapshot?.patch} />
           </section>
 
-          <section className="flex min-w-0 flex-col gap-5">
-            <LiveCourtroom roles={snapshot?.courtroom ?? []} />
-            <ExecutionTimeline timeline={snapshot?.timeline ?? []} />
-            <TaskGraphPanel taskPlan={snapshot?.task_plan} executionGraph={snapshot?.execution_graph} />
-            <ContextAssemblyPanel
-              assembly={snapshot?.context_assembly}
-              repositoryRag={snapshot?.repository_rag}
-              knowledgeGraph={snapshot?.knowledge_graph}
-              adrs={snapshot?.adrs ?? []}
-            />
-            <GitPanel
-              git={snapshot?.git}
-              commitMessage={commitMessage}
-              setCommitMessage={setCommitMessage}
-              onCommit={commitActiveRepository}
-              onRollback={rollbackActiveRepository}
-            />
-            <PatchViewer patch={snapshot?.patch} />
-            <LogsPanel logs={snapshot?.logs ?? []} />
-          </section>
-
-          <section className="flex min-w-0 flex-col gap-5">
-            <ArtifactExplorer
-              artifacts={filteredArtifacts}
-              query={artifactQuery}
-              setQuery={setArtifactQuery}
-              role={artifactRole}
-              setRole={setArtifactRole}
-              selected={selectedArtifact}
-              setSelected={setSelectedArtifact}
-            />
-            <RunHistoryPanel
-              runs={snapshot?.run_history ?? []}
-              queued={snapshot?.queued_tasks ?? []}
-              replayEvents={replayEvents}
-              onReplay={openReplay}
-            />
-            <ObjectiveMemoryPanel objectives={snapshot?.objective_memory ?? []} />
-            <ToolActivityPanel tools={snapshot?.tool_activity} />
-            <RepositoryExplorer tree={tree} selectedFile={selectedFile} onOpenFile={openFile} />
-            <ConversationView items={snapshot?.conversation ?? []} />
-          </section>
+          <RightInspector
+            tab={rightTab}
+            setTab={setRightTab}
+            plan={plan}
+            summary={snapshot?.repository_summary}
+            architecture={snapshot?.architecture_summary}
+            tree={tree}
+            selectedFile={selectedFile}
+            onOpenFile={openFile}
+            projectBrain={snapshot?.project_brain}
+            architectureMemory={snapshot?.architecture_memory}
+            semanticMemory={snapshot?.semantic_memory}
+            repositoryRag={snapshot?.repository_rag}
+            knowledgeGraph={snapshot?.knowledge_graph}
+            adrs={snapshot?.adrs ?? []}
+            logs={snapshot?.logs ?? []}
+            latestArtifact={latestArtifact}
+            artifacts={snapshot?.artifacts ?? []}
+            onArtifactSelect={setSelectedArtifact}
+          />
         </div>
-      </div>
+
+        <BottomDock
+          tab={dockTab}
+          setTab={setDockTab}
+          height={dockHeight}
+          setHeight={setDockHeight}
+          logs={snapshot?.logs ?? []}
+          tests={snapshot?.tests}
+          convergence={snapshot?.convergence}
+          runtime={snapshot?.runtime}
+          git={snapshot?.git}
+          commitMessage={commitMessage}
+          setCommitMessage={setCommitMessage}
+          onCommit={commitActiveRepository}
+          onRollback={rollbackActiveRepository}
+          replayEvents={replayEvents}
+          releaseReport={snapshot?.release_report}
+          acceptance={snapshot?.acceptance}
+          build={snapshot?.build_validation}
+          visual={snapshot?.visual_validation}
+          quality={snapshot?.quality_score}
+        />
+      </section>
     </main>
   );
 }
 
-function WorkspaceBrowser(props: {
+function TopBar({
+  health,
+  activeRun,
+  phase,
+  repositoryRoot,
+  apiStats,
+  error,
+  onRefresh,
+  onPalette
+}: {
+  health: "checking" | "ok" | "degraded" | "failed";
+  activeRun: ControlSnapshot["active_run"];
+  phase: string;
+  repositoryRoot: string;
+  apiStats: { snapshotLatency: number; healthLatency: number; failures: number; lastRefresh: string };
+  error: string | null;
+  onRefresh: () => void;
+  onPalette: () => void;
+}) {
+  return (
+    <header className="topbar">
+      <div className="min-w-0">
+        <div className="brand-row">
+          <div className="brand-mark"><Sparkles size={18} /></div>
+          <div className="min-w-0">
+            <h1>Forge</h1>
+            <p>{repositoryRoot}</p>
+          </div>
+        </div>
+      </div>
+      <div className="topbar-status">
+        <StatusPill tone={health === "ok" ? "success" : health === "failed" ? "danger" : "warning"}>
+          backend {health}
+        </StatusPill>
+        <StatusPill tone={activeRun ? "accent" : "neutral"}>{phase}</StatusPill>
+        <span className="latency">snapshot {apiStats.snapshotLatency}ms</span>
+        <span className="latency">health {apiStats.healthLatency}ms</span>
+        <span className="latency">last {apiStats.lastRefresh || "pending"}</span>
+        <Button variant="ghost" className="h-8 px-2" onClick={onPalette}>
+          <Command size={15} />
+          Ctrl+K
+        </Button>
+        <Button variant="secondary" className="h-8 px-2" onClick={onRefresh}>
+          <RefreshCw size={15} />
+        </Button>
+      </div>
+      {error ? <div className="api-alert">{error}</div> : null}
+    </header>
+  );
+}
+
+function LeftSidebar({
+  collapsed,
+  setCollapsed,
+  repositories,
+  activeRepository,
+  importPath,
+  setImportPath,
+  browser,
+  browserError,
+  runHistory,
+  objectiveMemory,
+  knowledgeGraph,
+  benchmarkSummary,
+  onBrowse,
+  onImport,
+  onSelect,
+  onRefresh,
+  onReplay,
+  onBenchmark
+}: {
+  collapsed: boolean;
+  setCollapsed: (value: boolean) => void;
   repositories: Array<Record<string, unknown>>;
   activeRepository?: Record<string, unknown> | null;
   importPath: string;
   setImportPath: (value: string) => void;
   browser?: Record<string, unknown> | null;
   browserError?: string | null;
+  runHistory: Array<Record<string, unknown>>;
+  objectiveMemory: Array<Record<string, unknown>>;
+  knowledgeGraph?: Record<string, unknown> | null;
+  benchmarkSummary?: Record<string, unknown> | null;
   onBrowse: (path?: string) => void;
   onImport: () => void;
   onSelect: (repositoryId: string) => void;
   onRefresh: () => void;
-}) {
-  const entries = Array.isArray(props.browser?.entries)
-    ? (props.browser.entries as Array<Record<string, unknown>>)
-    : [];
-  const roots = asList(props.browser?.roots);
-  const parent = stringValue(props.browser?.parent);
-  return (
-    <Card>
-      <CardHeader title="Workspace Browser" action={<GitBranch size={18} className="text-accent" />}>
-        {stringValue(props.activeRepository?.repository_name) || "no repository selected"}
-      </CardHeader>
-      <div className="space-y-3 p-4">
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
-          <Input value={props.importPath} onChange={(event) => props.setImportPath(event.target.value)} />
-          <Button variant="secondary" onClick={() => props.onBrowse(props.importPath)}>
-            <FolderOpen size={16} />
-            Browse
-          </Button>
-          <Button variant="secondary" onClick={props.onImport}>
-            <Archive size={16} />
-            Import
-          </Button>
-        </div>
-        {props.browserError ? (
-          <div className="rounded-md border border-red-900 bg-red-950 px-3 py-2 text-xs text-danger">
-            {props.browserError}
-          </div>
-        ) : null}
-        <div className="rounded-md border border-border bg-slate-950">
-          <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs">
-            <span className="truncate text-muted">{stringValue(props.browser?.current) || "Select a local path"}</span>
-            <div className="flex shrink-0 items-center gap-2">
-              {parent ? (
-                <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => props.onBrowse(parent)}>
-                  Up
-                </Button>
-              ) : null}
-              <Badge tone={props.browser?.valid_repository ? "success" : "neutral"}>
-                {props.browser?.valid_repository ? "valid" : "folder"}
-              </Badge>
-            </div>
-          </div>
-          {roots.length ? (
-            <div className="flex gap-2 overflow-x-auto border-b border-border px-3 py-2">
-              {roots.map((root) => (
-                <Button key={root} variant="ghost" className="h-7 shrink-0 px-2 text-xs" onClick={() => props.onBrowse(root)}>
-                  {root}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          <div className="max-h-48 overflow-auto">
-            {entries.length ? (
-              entries.map((entry) => {
-                const path = stringValue(entry.path);
-                return (
-                  <button
-                    key={path}
-                    className="block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900"
-                    onClick={() => path && props.onBrowse(path)}
-                  >
-                    <div className="flex min-w-0 items-center justify-between gap-2">
-                      <span className="truncate">{stringValue(entry.name)}</span>
-                      <Badge tone={entry.is_git_repository || entry.has_app_markers ? "accent" : "neutral"}>
-                        {entry.is_git_repository ? "git" : entry.has_app_markers ? "app" : "dir"}
-                      </Badge>
-                    </div>
-                    <div className="mt-1 truncate text-xs text-muted">{path}</div>
-                  </button>
-                );
-              })
-            ) : (
-              <div className="px-3 py-2 text-sm text-muted">No child directories available.</div>
-            )}
-          </div>
-        </div>
-        <div className="max-h-44 overflow-auto rounded-md border border-border bg-slate-950">
-          {props.repositories.length ? (
-            props.repositories.map((repository) => {
-              const repositoryId = stringValue(repository.repository_id);
-              const active = repositoryId === stringValue(props.activeRepository?.repository_id);
-              return (
-                <button
-                  key={repositoryId}
-                  className={cn(
-                    "block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900",
-                    active && "bg-cyan-950"
-                  )}
-                  onClick={() => repositoryId && props.onSelect(repositoryId)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{stringValue(repository.repository_name)}</span>
-                    <Badge tone={active ? "accent" : "neutral"}>{stringValue(repository.repository_type)}</Badge>
-                  </div>
-                  <div className="mt-1 truncate text-xs text-muted">{stringValue(repository.repository_path)}</div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="px-3 py-2 text-sm text-muted">No repositories registered.</div>
-          )}
-        </div>
-        <Button variant="secondary" onClick={props.onRefresh} disabled={!props.activeRepository}>
-          <RefreshCw size={16} />
-          Refresh Intelligence
-        </Button>
-      </div>
-    </Card>
-  );
-}
-
-function RepositorySummary({
-  summary,
-  architecture,
-  plan
-}: {
-  summary?: Record<string, unknown> | null;
-  architecture?: string | null;
-  plan?: Record<string, unknown> | null;
-}) {
-  const filesToCreate = asList(plan?.files_to_create);
-  const filesToModify = asList(plan?.files_to_modify);
-  const expectedTests = asList(plan?.expected_tests);
-  return (
-    <Card>
-      <CardHeader title="Repository Intelligence" action={<ListChecks size={18} className="text-accent" />}>
-        {architecture ?? "scan pending"}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <dl className="space-y-2">
-          <Metric label="language" value={summary?.primary_language ?? "unknown"} />
-          <Metric label="frameworks" value={asList(summary?.frameworks).join(", ") || "none"} />
-          <Metric label="package manager" value={asList(summary?.package_managers).join(", ") || "none"} />
-          <Metric label="tests" value={asList(summary?.test_frameworks).join(", ") || "none"} />
-          <Metric label="entrypoints" value={asList(summary?.entrypoints).join(", ") || "none"} />
-        </dl>
-        <div className="grid gap-2">
-          <PlanList title="Files to create" items={filesToCreate} />
-          <PlanList title="Files to modify" items={filesToModify} />
-          <PlanList title="Expected tests" items={expectedTests} />
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function PlanList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="rounded-md border border-border bg-slate-950 p-2">
-      <div className="mb-1 text-xs font-medium text-muted">{title}</div>
-      {items.length ? (
-        <ul className="space-y-1">
-          {items.map((item) => (
-            <li key={item} className="truncate text-xs">{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <div className="text-xs text-muted">none</div>
-      )}
-    </div>
-  );
-}
-
-function MiniList({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="rounded-md border border-border bg-slate-950 p-2">
-      <div className="mb-1 text-xs font-medium text-muted">{title}</div>
-      {items.length ? (
-        <ul className="space-y-1">
-          {items.slice(0, 8).map((item, index) => (
-            <li key={`${title}-${index}`} className="truncate text-xs">{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <div className="text-xs text-muted">none</div>
-      )}
-    </div>
-  );
-}
-
-function ArchitectureMemoryPanel({
-  memory,
-  compressed
-}: {
-  memory?: Record<string, unknown> | null;
-  compressed?: Record<string, unknown> | null;
-}) {
-  const modules = asList(memory?.important_modules);
-  const boundaries = asList(memory?.service_boundaries);
-  const modified = asList(memory?.previously_modified_files);
-  const selected = asList(compressed?.selected_files);
-  return (
-    <Card>
-      <CardHeader title="Architecture Memory" action={<Activity size={18} className="text-accent" />}>
-        {stringValue(memory?.updated_at) || "memory pending"}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <p className="text-muted">{stringValue(memory?.architecture_summary) || "No architecture memory yet."}</p>
-        <div className="grid gap-2">
-          <MiniList title="Important Modules" items={modules} />
-          <MiniList title="Service Boundaries" items={boundaries} />
-          <MiniList title="Previously Modified" items={modified} />
-          <MiniList title="Compressed Context Files" items={selected} />
-        </div>
-        <Metric label="context tokens" value={compressed?.token_estimate ?? 0} />
-      </div>
-    </Card>
-  );
-}
-
-function ProjectBrainPanel({
-  brain,
-  semantic
-}: {
-  brain?: Record<string, unknown> | null;
-  semantic?: Record<string, unknown> | null;
-}) {
-  const stats = objectValue(semantic?.stats);
-  const retrieved = Array.isArray(semantic?.retrieved)
-    ? (semantic.retrieved as Array<Record<string, unknown>>)
-    : [];
-  return (
-    <Card>
-      <CardHeader title="Project Brain" action={<Brain size={18} className="text-accent" />}>
-        {stringValue(brain?.updated_at) || "local memory pending"}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <p className="text-muted">
-          {asList(brain?.architecture_summaries).slice(-1)[0] || "No persisted project brain yet."}
-        </p>
-        <div className="grid gap-2 md:grid-cols-2">
-          <MiniList title="Decisions" items={asList(brain?.decisions)} />
-          <MiniList title="Successful Patterns" items={asList(brain?.successful_patterns)} />
-          <MiniList title="Failures" items={asList(brain?.failures)} />
-          <MiniList title="Repairs" items={asList(brain?.repairs)} />
-        </div>
-        <dl className="space-y-2">
-          <Metric label="semantic items" value={stats.items ?? 0} />
-          <Metric label="embedding" value={stats.embedding ?? "local"} />
-        </dl>
-        <MiniList title="Retrieved Memories" items={retrieved.map((item) => `${item.kind ?? ""}: ${item.text ?? ""}`)} />
-      </div>
-    </Card>
-  );
-}
-
-function ContextAssemblyPanel({
-  assembly,
-  repositoryRag,
-  knowledgeGraph,
-  adrs
-}: {
-  assembly?: Record<string, unknown> | null;
-  repositoryRag?: Record<string, unknown> | null;
-  knowledgeGraph?: Record<string, unknown> | null;
-  adrs: Array<Record<string, unknown>>;
-}) {
-  const usage = objectValue(assembly?.context_usage);
-  const ragHits = Array.isArray(repositoryRag?.hits) ? (repositoryRag.hits as Array<Record<string, unknown>>) : [];
-  const graphStats = objectValue(knowledgeGraph?.stats);
-  const nodes = Array.isArray(knowledgeGraph?.nodes) ? (knowledgeGraph.nodes as Array<Record<string, unknown>>) : [];
-  return (
-    <Card>
-      <CardHeader title="Context Assembly" action={<Network size={18} className="text-accent" />}>
-        {`${usage.selected_files ?? 0} files / ${usage.semantic_memories ?? 0} memories`}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <div className="grid gap-2 md:grid-cols-2">
-          <MiniList title="Selected Files" items={asList(assembly?.relevant_files)} />
-          <MiniList title="Repository RAG" items={ragHits.map((hit) => `${hit.path ?? ""} (${hit.score ?? 0})`)} />
-          <MiniList title="ADR Explorer" items={adrs.map((adr) => `${adr.title ?? ""}: ${adr.decision ?? ""}`)} />
-          <MiniList title="Knowledge Nodes" items={nodes.slice(0, 12).map((node) => `${node.kind ?? ""}: ${node.label ?? ""}`)} />
-        </div>
-        <dl className="space-y-2">
-          <Metric label="graph nodes" value={graphStats.nodes ?? 0} />
-          <Metric label="graph edges" value={graphStats.edges ?? 0} />
-          <Metric label="rag indexed" value={objectValue(repositoryRag?.index).indexed_files ?? 0} />
-        </dl>
-      </div>
-    </Card>
-  );
-}
-
-function ToolActivityPanel({ tools }: { tools?: Record<string, unknown> | null }) {
-  const activities = Array.isArray(tools?.activities)
-    ? (tools.activities as Array<Record<string, unknown>>)
-    : [];
-  return (
-    <Card>
-      <CardHeader title="Tool Activity" action={<Database size={18} className="text-accent" />}>
-        {activities.length ? `${activities.length} local calls` : "idle"}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <MiniList title="Local Tools" items={asList(tools?.tools)} />
-        <div className="max-h-44 overflow-auto rounded-md border border-border bg-slate-950">
-          {activities.length ? (
-            activities.slice(-10).map((activity, index) => (
-              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{stringValue(activity.tool)}</span>
-                  <Badge tone={activity.status === "ok" ? "success" : "danger"}>
-                    {stringValue(activity.status)}
-                  </Badge>
-                </div>
-                <div className="mt-1 text-muted">{stringValue(activity.action)}</div>
-              </div>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-xs text-muted">No local tool calls recorded.</div>
-          )}
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function TaskGraphPanel({
-  taskPlan,
-  executionGraph
-}: {
-  taskPlan?: Record<string, unknown> | null;
-  executionGraph?: Record<string, unknown> | null;
-}) {
-  const tasks = Array.isArray(taskPlan?.tasks) ? (taskPlan.tasks as Array<Record<string, unknown>>) : [];
-  const steps = Array.isArray(executionGraph?.steps) ? (executionGraph.steps as Array<Record<string, unknown>>) : [];
-  const blocked = asList(executionGraph?.blocked);
-  const completed = asList(executionGraph?.completed);
-  const failed = asList(executionGraph?.failed);
-  const running = stringValue(executionGraph?.running);
-  return (
-    <Card>
-      <CardHeader title="Task Graph" action={<ListChecks size={18} className="text-accent" />}>
-        {tasks.length ? `${tasks.length} tasks` : "plan pending"}
-      </CardHeader>
-      <div className="space-y-3 p-4">
-        <div className="grid gap-2">
-          {tasks.slice(0, 6).map((task) => (
-            <div key={stringValue(task.task_id)} className="rounded-md border border-border bg-slate-950 p-3 text-sm">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{stringValue(task.task_id)}</span>
-                <Badge tone="neutral">{stringValue(task.status) || "pending"}</Badge>
-              </div>
-              <div className="mt-1 text-muted">{stringValue(task.goal)}</div>
-              <div className="mt-2 truncate text-xs text-muted">{asList(task.affected_files).join(", ")}</div>
-            </div>
-          ))}
-        </div>
-        <div className="grid gap-2 md:grid-cols-3">
-          <MiniList title="Execution Steps" items={steps.map((step) => {
-            const id = stringValue(step.step_id);
-            const status = stringValue(step.status) || "PENDING";
-            const duration = step.duration_ms != null ? ` ${step.duration_ms}ms` : "";
-            return `${status} ${step.kind ?? ""} ${id}${duration}`;
-          })} />
-          <MiniList title="Completed" items={completed} />
-          <MiniList title={running ? `Running: ${running}` : "Running"} items={running ? [running] : []} />
-          <MiniList title="Blocked" items={blocked} />
-          <MiniList title="Failed" items={failed} />
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function ProductionValidationPanel({
-  bootstrap,
-  acceptance,
-  build,
-  visual,
-  quality,
-  releaseReport,
-  benchmarkSummary,
-  onBenchmark
-}: {
-  bootstrap?: Record<string, unknown> | null;
-  acceptance?: Record<string, unknown> | null;
-  build?: Record<string, unknown> | null;
-  visual?: Record<string, unknown> | null;
-  quality?: Record<string, unknown> | null;
-  releaseReport?: Record<string, unknown> | null;
-  benchmarkSummary?: Record<string, unknown> | null;
+  onReplay: (runId: string) => void;
   onBenchmark: () => void;
 }) {
-  return (
-    <Card>
-      <CardHeader title="Production Readiness" action={<CheckCircle2 size={18} className="text-accent" />}>
-        score {String(quality?.overall ?? "pending")}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <dl className="space-y-2">
-          <Metric label="bootstrap" value={bootstrap?.applied ? "applied" : bootstrap?.reason ?? "pending"} />
-          <Metric label="acceptance" value={acceptance?.passed === undefined ? "pending" : acceptance.passed ? "passed" : "failed"} />
-          <Metric label="build" value={build?.passed === undefined ? "pending" : build.passed ? "passed" : "failed"} />
-          <Metric label="visual" value={visual?.passed === undefined ? "pending" : visual.passed ? "passed" : "failed"} />
-          <Metric label="report" value={releaseReport?.created_at ?? "pending"} />
-        </dl>
-        <div className="grid gap-2 md:grid-cols-2">
-          <MiniList title="Acceptance Errors" items={asList(acceptance?.errors)} />
-          <MiniList title="Build Errors" items={asList(build?.errors)} />
-        </div>
-        <Button variant="secondary" onClick={onBenchmark}>
-          <Activity size={16} />
-          Run Isolated Benchmarks
-        </Button>
-        {benchmarkSummary ? (
-          <div className="rounded-md border border-border bg-slate-950 p-2 text-xs">
-            success {String(benchmarkSummary.success_rate ?? 0)} / completion {String(benchmarkSummary.completion_rate ?? 0)}
-          </div>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
+  const entries = Array.isArray(browser?.entries) ? (browser.entries as Array<Record<string, unknown>>) : [];
+  const roots = asList(browser?.roots);
+  const parent = stringValue(browser?.parent);
+  const graphStats = objectValue(knowledgeGraph?.stats);
 
-function ConvergencePanel({ convergence }: { convergence?: Record<string, unknown> }) {
-  const history = Array.isArray(convergence?.history)
-    ? (convergence.history as Array<Record<string, unknown>>)
-    : [];
-  const passRate = Number(convergence?.test_pass_rate ?? 0);
-  const status = String(convergence?.status ?? "idle");
   return (
-    <Card>
-      <CardHeader title="Convergence" action={<ListChecks size={18} className="text-accent" />}>
-        {String(convergence?.stop_reason ?? "waiting")}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <dl className="space-y-2">
-          <Metric label="phase" value={convergence?.current_phase ?? "idle"} />
-          <Metric label="status" value={status} />
-          <Metric
-            label="repair attempt"
-            value={`${convergence?.current_repair_attempt ?? 0} / ${convergence?.repair_limit ?? 0}`}
-          />
-          <Metric label="failure" value={convergence?.failure_category ?? "none"} />
-          <Metric label="last failing test" value={convergence?.last_failing_test ?? "none"} />
-          <Metric label="pass rate" value={`${Math.round(passRate * 100)}%`} />
-        </dl>
-        <div className="h-2 rounded bg-slate-950">
-          <div
-            className={cn("h-2 rounded", status === "converged" ? "bg-emerald-500" : "bg-cyan-500")}
-            style={{ width: `${Math.max(0, Math.min(100, passRate * 100))}%` }}
-          />
-        </div>
-        <div className="max-h-40 overflow-auto rounded-md border border-border bg-slate-950">
-          {history.length ? (
-            history.slice(-6).map((entry, index) => (
-              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{String(entry.phase)}</span>
-                  <span className="text-muted">attempt {String(entry.attempt)}</span>
-                </div>
-                <div className="mt-1 truncate text-muted">
-                  {String(entry.failure_category ?? entry.message ?? "ok")}
-                </div>
+    <aside className={cn("left-sidebar", collapsed && "is-collapsed")}>
+      <div className="sidebar-head">
+        <button className="icon-button" onClick={() => setCollapsed(!collapsed)} aria-label="Toggle sidebar">
+          {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+        </button>
+        {!collapsed ? <span>Workspace</span> : null}
+      </div>
+      <nav className="rail-icons" aria-label="Workspace navigation">
+        <RailIcon icon={<FolderOpen size={17} />} label="Repositories" collapsed={collapsed} />
+        <RailIcon icon={<History size={17} />} label="Run History" collapsed={collapsed} />
+        <RailIcon icon={<Brain size={17} />} label="Memories" collapsed={collapsed} />
+        <RailIcon icon={<Network size={17} />} label="Knowledge Graph" collapsed={collapsed} />
+        <RailIcon icon={<Activity size={17} />} label="Benchmarks" collapsed={collapsed} />
+        <RailIcon icon={<Settings size={17} />} label="Settings" collapsed={collapsed} />
+      </nav>
+      {collapsed ? null : (
+        <div className="sidebar-scroll">
+          <SidebarSection title="Repositories" icon={<FolderOpen size={14} />}>
+            <div className="path-import">
+              <Input value={importPath} onChange={(event) => setImportPath(event.target.value)} />
+              <div className="path-actions">
+                <Button variant="secondary" className="h-8 px-2" onClick={() => onBrowse(importPath)}>Browse</Button>
+                <Button variant="secondary" className="h-8 px-2" onClick={onImport}>Import</Button>
               </div>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-xs text-muted">No repair attempts yet.</div>
-          )}
+            </div>
+            {browserError ? <div className="inline-error">{browserError}</div> : null}
+            <div className="browser-card">
+              <div className="browser-current">
+                <span>{stringValue(browser?.current) || "Select a folder"}</span>
+                {parent ? <button onClick={() => onBrowse(parent)}>Up</button> : null}
+              </div>
+              {roots.length ? (
+                <div className="root-list">
+                  {roots.map((root) => <button key={root} onClick={() => onBrowse(root)}>{root}</button>)}
+                </div>
+              ) : null}
+              <div className="dir-list">
+                {entries.slice(0, 18).map((entry) => {
+                  const path = stringValue(entry.path);
+                  return (
+                    <button key={path} onClick={() => path && onBrowse(path)}>
+                      <Folder size={14} />
+                      <span>{stringValue(entry.name)}</span>
+                      <small>{entry.is_git_repository ? "git" : entry.has_app_markers ? "app" : ""}</small>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="repo-list">
+              {repositories.length ? repositories.slice(0, 10).map((repo) => {
+                const id = stringValue(repo.repository_id);
+                const active = id === stringValue(activeRepository?.repository_id);
+                return (
+                  <button key={id} className={cn(active && "active")} onClick={() => id && onSelect(id)}>
+                    <GitBranch size={14} />
+                    <span>{stringValue(repo.repository_name) || "repository"}</span>
+                    <small>{stringValue(repo.branch) || stringValue(repo.repository_type)}</small>
+                  </button>
+                );
+              }) : <p className="empty">No repositories registered.</p>}
+            </div>
+            <Button variant="secondary" className="w-full" disabled={!activeRepository} onClick={onRefresh}>
+              <RefreshCw size={15} />
+              Refresh Intelligence
+            </Button>
+          </SidebarSection>
+
+          <SidebarSection title="Run History" icon={<History size={14} />}>
+            <div className="history-list">
+              {runHistory.length ? runHistory.slice(0, 8).map((run) => {
+                const id = stringValue(run.run_id);
+                return (
+                  <button key={id} onClick={() => id && onReplay(id)}>
+                    <span>{stringValue(run.objective) || "Autonomous run"}</span>
+                    <StatusPill tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "neutral"}>
+                      {stringValue(run.status) || "stored"}
+                    </StatusPill>
+                  </button>
+                );
+              }) : <p className="empty">No persisted runs yet.</p>}
+            </div>
+          </SidebarSection>
+
+          <SidebarSection title="Memory" icon={<Brain size={14} />}>
+            <StatGrid
+              items={[
+                ["objectives", objectiveMemory.length],
+                ["nodes", graphStats.nodes ?? 0],
+                ["edges", graphStats.edges ?? 0],
+                ["bench", benchmarkSummary?.success_rate ?? "idle"]
+              ]}
+            />
+          </SidebarSection>
+
+          <Button variant="secondary" className="w-full" onClick={onBenchmark}>
+            <Activity size={15} />
+            Run Isolated Benchmarks
+          </Button>
         </div>
-      </div>
-    </Card>
+      )}
+    </aside>
   );
 }
 
-function CommandCenter(props: {
+function ObjectiveComposer({
+  objective,
+  setObjective,
+  repositoryRoot,
+  setRepositoryRoot,
+  targetFile,
+  setTargetFile,
+  iterations,
+  setIterations,
+  testCommand,
+  setTestCommand,
+  execute,
+  setExecute,
+  activeRun,
+  classification,
+  onStart,
+  onPause,
+  onResume,
+  onStop
+}: {
   objective: string;
   setObjective: (value: string) => void;
   repositoryRoot: string;
@@ -929,465 +728,787 @@ function CommandCenter(props: {
   execute: boolean;
   setExecute: (value: boolean) => void;
   activeRun: ControlSnapshot["active_run"];
+  classification?: string | null;
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
   return (
-    <Card>
-      <CardHeader title="Command Center">
-        {props.activeRun ? props.activeRun.id : "ready"}
-      </CardHeader>
-      <div className="space-y-3 p-4">
-        <label className="block text-xs font-medium text-muted">Objective</label>
-        <Textarea value={props.objective} onChange={(event) => props.setObjective(event.target.value)} />
-        <label className="block text-xs font-medium text-muted">Target Repository</label>
-        <Input value={props.repositoryRoot} onChange={(event) => props.setRepositoryRoot(event.target.value)} />
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">Target File</label>
-            <Input value={props.targetFile} onChange={(event) => props.setTargetFile(event.target.value)} />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-muted">Iterations</label>
-            <Input
-              type="number"
-              min={1}
-              max={20}
-              value={props.iterations}
-              onChange={(event) => props.setIterations(Number(event.target.value))}
-            />
-          </div>
+    <section className="hero-composer">
+      <div className="composer-head">
+        <div>
+          <p className="eyebrow">Autonomous objective</p>
+          <h2>What should Forge build, repair, or refactor?</h2>
         </div>
-        <label className="block text-xs font-medium text-muted">Test Command</label>
-        <Input value={props.testCommand} onChange={(event) => props.setTestCommand(event.target.value)} />
-            <div className="flex items-center justify-between rounded-md border border-border bg-slate-950 px-3 py-2">
-          <span className="text-sm">Execute autonomous run</span>
-          <input
-            type="checkbox"
-            checked={props.execute}
-            onChange={(event) => props.setExecute(event.target.checked)}
-            className="h-4 w-4 accent-cyan-700"
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button onClick={props.onStart}>
-            <Play size={16} />
-            Run
-          </Button>
-          <Button variant="secondary" onClick={props.onPause} disabled={!props.activeRun}>
-            <Pause size={16} />
-            Pause
-          </Button>
-          <Button variant="secondary" onClick={props.onResume} disabled={!props.activeRun}>
-            <Play size={16} />
-            Resume
-          </Button>
-          <Button variant="danger" onClick={props.onStop} disabled={!props.activeRun}>
-            <Square size={16} />
-            Stop
-          </Button>
+        <StatusPill tone={classification ? "accent" : "neutral"}>{classification || "unclassified"}</StatusPill>
+      </div>
+      <Textarea
+        className="objective-box"
+        value={objective}
+        onChange={(event) => setObjective(event.target.value)}
+        placeholder="Describe the engineering outcome. Forge will scan, plan, code, validate, repair, and judge."
+      />
+      <div className="template-row">
+        {promptTemplates.map((template) => (
+          <button key={template} onClick={() => setObjective(template)}>{template}</button>
+        ))}
+      </div>
+      <div className="composer-grid">
+        <Field label="Repository"><Input value={repositoryRoot} onChange={(event) => setRepositoryRoot(event.target.value)} /></Field>
+        <Field label="Target file"><Input value={targetFile} onChange={(event) => setTargetFile(event.target.value)} /></Field>
+        <Field label="Iterations"><Input type="number" min={1} max={20} value={iterations} onChange={(event) => setIterations(Number(event.target.value))} /></Field>
+        <Field label="Tests"><Input value={testCommand} onChange={(event) => setTestCommand(event.target.value)} /></Field>
+      </div>
+      <div className="composer-actions">
+        <label className="execute-toggle">
+          <input type="checkbox" checked={execute} onChange={(event) => setExecute(event.target.checked)} />
+          Execute immediately
+        </label>
+        <div className="run-controls">
+          <Button onClick={onStart}><Play size={16} /> Run</Button>
+          <Button variant="secondary" onClick={onPause} disabled={!activeRun}><Pause size={16} /> Pause</Button>
+          <Button variant="secondary" onClick={onResume} disabled={!activeRun}><Play size={16} /> Resume</Button>
+          <Button variant="danger" onClick={onStop} disabled={!activeRun}><Square size={16} /> Stop</Button>
         </div>
       </div>
-    </Card>
+    </section>
   );
 }
 
-function LiveCourtroom({ roles }: { roles: Array<Record<string, unknown>> }) {
+function ActiveRunPanel({
+  activeRun,
+  phase,
+  snapshot
+}: {
+  activeRun: ControlSnapshot["active_run"];
+  phase: string;
+  snapshot: ControlSnapshot | null;
+}) {
+  const changedFiles = snapshot?.patch?.changed_files ?? [];
+  const tests = snapshot?.tests ?? {};
+  const runtime = snapshot?.runtime ?? {};
   return (
-    <Card>
-      <CardHeader title="Live Courtroom" action={<Bot size={18} className="text-accent" />} />
-      <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3">
-        {roles.map((role) => (
-            <div key={String(role.role)} className="rounded-md border border-border bg-slate-950 p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">{String(role.role)}</h3>
-              <Badge tone={role.status === "active" ? "accent" : "neutral"}>{String(role.status)}</Badge>
+    <section className="active-run-panel">
+      <div className="run-summary">
+        <div>
+          <p className="eyebrow">Active run</p>
+          <h2>{activeRun?.objective || snapshot?.active_objective || "No autonomous run active"}</h2>
+        </div>
+        <StatusPill tone={activeRun?.status === "failed" ? "danger" : activeRun ? "accent" : "neutral"}>
+          {activeRun?.status || "idle"}
+        </StatusPill>
+      </div>
+      <div className="phase-meter">
+        <div className="phase-meter-fill" style={{ width: `${phasePercent(phase)}%` }} />
+      </div>
+      <div className="run-metrics">
+        <MetricCard label="phase" value={phase} icon={<Activity size={16} />} />
+        <MetricCard label="model" value={runtime.active_model ?? "none"} icon={<Bot size={16} />} />
+        <MetricCard label="changed files" value={changedFiles.length} icon={<GitCompare size={16} />} />
+        <MetricCard label="tests" value={tests.status ?? "idle"} icon={<TestTube2 size={16} />} />
+      </div>
+    </section>
+  );
+}
+
+function VisualTimeline({ timeline, phase }: { timeline: Array<{ name: string; status: string }>; phase: string }) {
+  const normalized = phases.map((name) => {
+    const item = timeline.find((stage) => stage.name === name || stage.name?.toUpperCase?.() === name);
+    const status = item?.status || inferStageStatus(name, phase);
+    return { name, status };
+  });
+
+  return (
+    <section className="timeline-card">
+      <div className="section-title">
+        <Activity size={16} />
+        <span>Execution timeline</span>
+      </div>
+      <div className="execution-timeline">
+        {normalized.map((stage, index) => (
+          <div key={stage.name} className={cn("timeline-step", stage.status)}>
+            <div className="timeline-dot">
+              {stage.status === "completed" ? <Check size={13} /> : stage.status === "active" ? <Play size={12} /> : <Circle size={10} />}
             </div>
-            <dl className="mt-3 space-y-2 text-xs">
-              <Metric label="model" value={role.model} />
-              <Metric label="runtime" value={role.runtime} />
-              <Metric label="tokens" value={role.token_count ?? "pending"} />
-              <Metric label="latency" value={role.inference_time_seconds ?? "pending"} />
-              <Metric label="health" value={role.health} />
-            </dl>
+            <div>
+              <strong>{formatPhase(stage.name)}</strong>
+              <span>{stage.status === "active" ? "running" : stage.status}</span>
+            </div>
+            {index < normalized.length - 1 ? <div className="timeline-line" /> : null}
           </div>
         ))}
       </div>
-    </Card>
+    </section>
   );
 }
 
-function ExecutionTimeline({ timeline }: { timeline: Array<{ name: string; status: string }> }) {
+function LiveCourtroom({ roles, runtime }: { roles: Array<Record<string, unknown>>; runtime?: Record<string, unknown> }) {
+  const fallback = [
+    { role: "PRIMARY_CODER", status: "waiting" },
+    { role: "DEEPSEEK_SYNTH", status: "waiting" },
+    { role: "JUDGE", status: "waiting" }
+  ];
+  const data = roles.length ? roles : fallback;
   return (
-    <Card>
-      <CardHeader title="Execution Timeline" action={<Activity size={18} className="text-accent" />} />
-      <div className="grid grid-cols-2 gap-2 p-4 md:grid-cols-5">
-        {timeline.map((stage) => (
-          <div key={stage.name} className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
-            {stage.status === "completed" ? (
-              <CheckCircle2 size={16} className="text-success" />
-            ) : stage.status === "active" ? (
-              <Clock size={16} className="text-accent" />
-            ) : (
-              <Clock size={16} className="text-muted" />
-            )}
-            <span className="truncate text-sm">{stage.name}</span>
-          </div>
-        ))}
+    <section className="courtroom-panel">
+      <div className="section-title">
+        <Bot size={16} />
+        <span>Live courtroom</span>
       </div>
-    </Card>
+      <div className="model-grid">
+        {data.map((role) => {
+          const roleData = role as Record<string, unknown>;
+          const status = stringValue(roleData.status) || "waiting";
+          const active = status === "active" || status === "running";
+          return (
+            <article key={String(roleData.role)} className={cn("model-card", active && "active")}>
+              <div className="model-card-head">
+                <div className="model-avatar"><Bot size={17} /></div>
+                <div>
+                  <h3>{String(roleData.role)}</h3>
+                  <p>{stringValue(roleData.model) || String(runtime?.active_model ?? "local runtime")}</p>
+                </div>
+                <StatusPill tone={active ? "accent" : status === "failed" ? "danger" : status === "completed" ? "success" : "neutral"}>
+                  {status}
+                </StatusPill>
+              </div>
+              <div className="model-stats">
+                <MetricInline label="tokens" value={roleData.token_count ?? "pending"} />
+                <MetricInline label="latency" value={roleData.inference_time_seconds ?? "pending"} />
+                <MetricInline label="health" value={roleData.health ?? runtime?.health ?? "unknown"} />
+                <MetricInline label="output" value={roleData.output_size ?? "pending"} />
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
-function GitPanel(props: {
+function LiveCodeGeneration({
+  artifacts,
+  generatedFiles,
+  onSelect
+}: {
+  artifacts: ArtifactSummary[];
+  generatedFiles: string[];
+  onSelect: (artifact: ArtifactSummary) => void;
+}) {
+  return (
+    <section className="codegen-panel">
+      <div className="section-title">
+        <Code2 size={16} />
+        <span>Live code generation</span>
+      </div>
+      <div className="codegen-grid">
+        <div className="generated-file-list">
+          {generatedFiles.length ? generatedFiles.slice(0, 14).map((file) => (
+            <div key={file} className="generated-file">
+              <FileCode2 size={14} />
+              <span>{file}</span>
+              <small>tracked</small>
+            </div>
+          )) : <p className="empty">Generated files will appear as PRIMARY_CODER artifacts arrive.</p>}
+        </div>
+        <div className="artifact-stream">
+          {artifacts.length ? artifacts.slice(-4).reverse().map((artifact) => (
+            <button key={artifact.artifact_id} onClick={() => onSelect(artifact)}>
+              <span>{artifact.role}</span>
+              <strong>{artifact.content.length.toLocaleString()} chars</strong>
+              <small>{artifact.task}</small>
+            </button>
+          )) : <p className="empty">No model output yet.</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DiffViewer({ patch }: { patch?: ControlSnapshot["patch"] }) {
+  const diffLines = (patch?.diff ?? "").split("\n").filter(Boolean);
+  const added = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const removed = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  return (
+    <section className="diff-panel">
+      <div className="section-title">
+        <GitCompare size={16} />
+        <span>File changes</span>
+        <small>{(patch?.changed_files ?? []).length} files</small>
+        <small className="additions">+{added}</small>
+        <small className="deletions">-{removed}</small>
+      </div>
+      <div className="changed-files">
+        {(patch?.changed_files ?? []).map((file) => <span key={file}>{file}</span>)}
+      </div>
+      <pre className="diff-viewer">
+        {diffLines.length ? diffLines.map((line, index) => (
+          <div key={`${index}-${line}`} className={cn(
+            "diff-line",
+            line.startsWith("+") && "plus",
+            line.startsWith("-") && "minus",
+            line.startsWith("@@") && "hunk",
+            line.startsWith("diff --git") && "file"
+          )}>
+            <span>{String(index + 1).padStart(4, " ")}</span>
+            <code>{line}</code>
+          </div>
+        )) : <div className="diff-empty">No repository diff yet.</div>}
+      </pre>
+    </section>
+  );
+}
+
+function RightInspector({
+  tab,
+  setTab,
+  plan,
+  summary,
+  architecture,
+  tree,
+  selectedFile,
+  onOpenFile,
+  projectBrain,
+  architectureMemory,
+  semanticMemory,
+  repositoryRag,
+  knowledgeGraph,
+  adrs,
+  logs,
+  latestArtifact,
+  artifacts,
+  onArtifactSelect
+}: {
+  tab: RightTab;
+  setTab: (tab: RightTab) => void;
+  plan?: Record<string, unknown> | null;
+  summary?: Record<string, unknown> | null;
+  architecture?: string | null;
+  tree: RepoTreeNode | null;
+  selectedFile: { path: string; content: string } | null;
+  onOpenFile: (path: string) => void;
+  projectBrain?: Record<string, unknown> | null;
+  architectureMemory?: Record<string, unknown> | null;
+  semanticMemory?: Record<string, unknown> | null;
+  repositoryRag?: Record<string, unknown> | null;
+  knowledgeGraph?: Record<string, unknown> | null;
+  adrs: Array<Record<string, unknown>>;
+  logs: string[];
+  latestArtifact: ArtifactSummary | null;
+  artifacts: ArtifactSummary[];
+  onArtifactSelect: (artifact: ArtifactSummary) => void;
+}) {
+  return (
+    <aside className="right-inspector">
+      <div className="inspector-tabs">
+        <TabButton active={tab === "plan"} onClick={() => setTab("plan")}>Plan</TabButton>
+        <TabButton active={tab === "files"} onClick={() => setTab("files")}>Files</TabButton>
+        <TabButton active={tab === "memory"} onClick={() => setTab("memory")}>Memory</TabButton>
+        <TabButton active={tab === "logs"} onClick={() => setTab("logs")}>Logs</TabButton>
+      </div>
+      <div className="inspector-body">
+        {tab === "plan" ? <PlanInspector plan={plan} summary={summary} architecture={architecture} latestArtifact={latestArtifact} artifacts={artifacts} onArtifactSelect={onArtifactSelect} /> : null}
+        {tab === "files" ? <FileInspector tree={tree} selectedFile={selectedFile} onOpenFile={onOpenFile} /> : null}
+        {tab === "memory" ? (
+          <MemoryInspector
+            projectBrain={projectBrain}
+            architectureMemory={architectureMemory}
+            semanticMemory={semanticMemory}
+            repositoryRag={repositoryRag}
+            knowledgeGraph={knowledgeGraph}
+            adrs={adrs}
+          />
+        ) : null}
+        {tab === "logs" ? <LogStream logs={logs} compact /> : null}
+      </div>
+    </aside>
+  );
+}
+
+function PlanInspector({
+  plan,
+  summary,
+  architecture,
+  latestArtifact,
+  artifacts,
+  onArtifactSelect
+}: {
+  plan?: Record<string, unknown> | null;
+  summary?: Record<string, unknown> | null;
+  architecture?: string | null;
+  latestArtifact: ArtifactSummary | null;
+  artifacts: ArtifactSummary[];
+  onArtifactSelect: (artifact: ArtifactSummary) => void;
+}) {
+  return (
+    <div className="inspector-stack">
+      <PanelTitle icon={<ListChecks size={15} />} title="Execution plan" subtitle={stringValue(plan?.objective_type) || "waiting"} />
+      <p className="muted-copy">{architecture || "Repository architecture summary will appear after scan."}</p>
+      <StatGrid
+        items={[
+          ["language", summary?.primary_language ?? "unknown"],
+          ["frameworks", asList(summary?.frameworks).join(", ") || "none"],
+          ["tests", asList(summary?.test_frameworks).join(", ") || "none"],
+          ["package", asList(summary?.package_managers).join(", ") || "none"]
+        ]}
+      />
+      <FileList title="Files to create" files={asList(plan?.files_to_create)} />
+      <FileList title="Files to modify" files={asList(plan?.files_to_modify)} />
+      <FileList title="Expected tests" files={asList(plan?.expected_tests)} />
+      <PanelTitle icon={<Archive size={15} />} title="Artifacts" subtitle={latestArtifact?.role ?? "none"} />
+      <div className="artifact-list">
+        {artifacts.length ? artifacts.slice(-8).reverse().map((artifact) => (
+          <button key={artifact.artifact_id} onClick={() => onArtifactSelect(artifact)}>
+            <span>{artifact.role}</span>
+            <small>{artifact.content.length.toLocaleString()} chars</small>
+          </button>
+        )) : <p className="empty">No artifacts yet.</p>}
+      </div>
+      <pre className="artifact-preview">{latestArtifact?.content ?? "Select an artifact to inspect model output."}</pre>
+    </div>
+  );
+}
+
+function FileInspector({ tree, selectedFile, onOpenFile }: { tree: RepoTreeNode | null; selectedFile: { path: string; content: string } | null; onOpenFile: (path: string) => void }) {
+  const [query, setQuery] = useState("");
+  return (
+    <div className="inspector-stack">
+      <div className="search-field">
+        <Search size={14} />
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files" />
+      </div>
+      <div className="repo-tree">
+        {tree ? <TreeNode node={tree} query={query.toLowerCase()} onOpenFile={onOpenFile} /> : <p className="empty">No repository loaded.</p>}
+      </div>
+      <div className="file-preview-head">
+        <FileCode2 size={15} />
+        <span>{selectedFile?.path || "No file selected"}</span>
+      </div>
+      <pre className="code-preview">{selectedFile?.content ?? "Open a file from the repository tree."}</pre>
+    </div>
+  );
+}
+
+function MemoryInspector({
+  projectBrain,
+  architectureMemory,
+  semanticMemory,
+  repositoryRag,
+  knowledgeGraph,
+  adrs
+}: {
+  projectBrain?: Record<string, unknown> | null;
+  architectureMemory?: Record<string, unknown> | null;
+  semanticMemory?: Record<string, unknown> | null;
+  repositoryRag?: Record<string, unknown> | null;
+  knowledgeGraph?: Record<string, unknown> | null;
+  adrs: Array<Record<string, unknown>>;
+}) {
+  const stats = objectValue(knowledgeGraph?.stats);
+  const nodes = Array.isArray(knowledgeGraph?.nodes) ? (knowledgeGraph.nodes as Array<Record<string, unknown>>) : [];
+  const semanticStats = objectValue(semanticMemory?.stats);
+  const ragIndex = objectValue(repositoryRag?.index);
+  return (
+    <div className="inspector-stack">
+      <PanelTitle icon={<Brain size={15} />} title="Project brain" subtitle={stringValue(projectBrain?.updated_at) || "local"} />
+      <div className="memory-card">
+        <strong>Architecture</strong>
+        <p>{asList(projectBrain?.architecture_summaries).slice(-1)[0] || stringValue(architectureMemory?.architecture_summary) || "No architecture memory recorded yet."}</p>
+      </div>
+      <div className="memory-grid">
+        <MemoryMetric label="semantic" value={semanticStats.items ?? 0} />
+        <MemoryMetric label="rag files" value={ragIndex.indexed_files ?? 0} />
+        <MemoryMetric label="graph nodes" value={stats.nodes ?? 0} />
+        <MemoryMetric label="adrs" value={adrs.length} />
+      </div>
+      <KnowledgeGraphPreview nodes={nodes} />
+      <FileList title="Decisions" files={asList(projectBrain?.decisions)} />
+      <FileList title="Repairs" files={asList(projectBrain?.repairs)} />
+      <FileList title="Important modules" files={asList(architectureMemory?.important_modules)} />
+      <FileList title="ADR Explorer" files={adrs.map((adr) => `${adr.title ?? "ADR"}: ${adr.decision ?? ""}`)} />
+    </div>
+  );
+}
+
+function KnowledgeGraphPreview({ nodes }: { nodes: Array<Record<string, unknown>> }) {
+  const visible = nodes.slice(0, 10);
+  return (
+    <div className="graph-preview">
+      <svg viewBox="0 0 320 190" role="img" aria-label="Knowledge graph preview">
+        <line x1="160" y1="94" x2="70" y2="52" />
+        <line x1="160" y1="94" x2="258" y2="54" />
+        <line x1="160" y1="94" x2="82" y2="145" />
+        <line x1="160" y1="94" x2="245" y2="142" />
+        <circle cx="160" cy="94" r="25" className="node-core" />
+        <circle cx="70" cy="52" r="16" />
+        <circle cx="258" cy="54" r="16" />
+        <circle cx="82" cy="145" r="16" />
+        <circle cx="245" cy="142" r="16" />
+      </svg>
+      <div className="graph-node-list">
+        {visible.length ? visible.map((node, index) => <span key={index}>{stringValue(node.label) || stringValue(node.kind) || `node-${index}`}</span>) : <span>No graph nodes yet</span>}
+      </div>
+    </div>
+  );
+}
+
+function BottomDock({
+  tab,
+  setTab,
+  height,
+  setHeight,
+  logs,
+  tests,
+  convergence,
+  runtime,
+  git,
+  commitMessage,
+  setCommitMessage,
+  onCommit,
+  onRollback,
+  replayEvents,
+  releaseReport,
+  acceptance,
+  build,
+  visual,
+  quality
+}: {
+  tab: DockTab;
+  setTab: (tab: DockTab) => void;
+  height: number;
+  setHeight: (height: number) => void;
+  logs: string[];
+  tests?: Record<string, unknown>;
+  convergence?: Record<string, unknown>;
+  runtime?: Record<string, unknown>;
   git?: Record<string, unknown> | null;
   commitMessage: string;
   setCommitMessage: (value: string) => void;
   onCommit: () => void;
   onRollback: () => void;
-}) {
-  const status = objectValue(props.git?.status);
-  const changedFiles = Array.isArray(props.git?.changed_files)
-    ? (props.git.changed_files as Array<Record<string, unknown>>)
-    : [];
-  const history = Array.isArray(props.git?.history)
-    ? (props.git.history as Array<Record<string, unknown>>)
-    : [];
-  return (
-    <Card>
-      <CardHeader title="Git Safety" action={<GitBranch size={18} className="text-accent" />}>
-        {stringValue(status.branch) || "not a git repository"}
-      </CardHeader>
-      <div className="space-y-3 p-4 text-sm">
-        <dl className="space-y-2">
-          <Metric label="branch" value={status.branch ?? "unknown"} />
-          <Metric label="dirty" value={status.is_dirty ? "yes" : "no"} />
-          <Metric label="modified" value={asList(status.modified_files).length} />
-          <Metric label="untracked" value={asList(status.untracked_files).length} />
-        </dl>
-        <div className="grid grid-cols-[1fr_auto_auto] gap-2">
-          <Input value={props.commitMessage} onChange={(event) => props.setCommitMessage(event.target.value)} />
-          <Button variant="secondary" onClick={props.onCommit}>
-            <CheckCircle2 size={16} />
-            Commit
-          </Button>
-          <Button variant="danger" onClick={props.onRollback}>
-            <XCircle size={16} />
-            Rollback
-          </Button>
-        </div>
-        <div className="grid gap-2 md:grid-cols-2">
-          <MiniList title="Changed Files" items={changedFiles.map((file) => `${file.status ?? "M"} ${file.path ?? ""}`)} />
-          <MiniList title="Commit History" items={history.map((commit) => `${String(commit.sha).slice(0, 7)} ${commit.subject ?? ""}`)} />
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function ArtifactExplorer(props: {
-  artifacts: ArtifactSummary[];
-  query: string;
-  setQuery: (value: string) => void;
-  role: string;
-  setRole: (value: string) => void;
-  selected: ArtifactSummary | null;
-  setSelected: (artifact: ArtifactSummary) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader title="Artifact Explorer" action={<Archive size={18} className="text-accent" />} />
-      <div className="space-y-3 p-4">
-        <div className="grid grid-cols-[1fr_130px] gap-2">
-          <div className="relative">
-            <Search className="absolute left-2 top-2.5 text-muted" size={15} />
-            <Input className="pl-8" value={props.query} onChange={(event) => props.setQuery(event.target.value)} />
-          </div>
-          <select
-            value={props.role}
-            onChange={(event) => props.setRole(event.target.value)}
-            className="h-9 rounded-md border border-border bg-slate-950 px-2 text-sm"
-          >
-            <option>ALL</option>
-            <option>PRIMARY_CODER</option>
-            <option>DEEPSEEK_SYNTH</option>
-            <option>JUDGE</option>
-          </select>
-        </div>
-        <div className="max-h-72 overflow-auto rounded-md border border-border">
-          {props.artifacts.map((artifact) => (
-            <button
-              key={artifact.artifact_id}
-              onClick={() => props.setSelected(artifact)}
-              className={cn(
-                "block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900",
-                props.selected?.artifact_id === artifact.artifact_id && "bg-cyan-950"
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{artifact.role}</span>
-                <span className="text-xs text-muted">round {artifact.round_id}</span>
-              </div>
-              <div className="mt-1 truncate text-xs text-muted">{artifact.task}</div>
-            </button>
-          ))}
-        </div>
-        <pre className="max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-          {props.selected?.content ?? "No artifact selected."}
-        </pre>
-      </div>
-    </Card>
-  );
-}
-
-function RunHistoryPanel(props: {
-  runs: Array<Record<string, unknown>>;
-  queued: Array<Record<string, unknown>>;
   replayEvents: Array<Record<string, unknown>>;
-  onReplay: (runId: string) => void;
+  releaseReport?: Record<string, unknown> | null;
+  acceptance?: Record<string, unknown> | null;
+  build?: Record<string, unknown> | null;
+  visual?: Record<string, unknown> | null;
+  quality?: Record<string, unknown> | null;
 }) {
   return (
-    <Card>
-      <CardHeader title="Run History" action={<Clock size={18} className="text-accent" />}>
-        {props.queued.length ? `${props.queued.length} queued` : "queue empty"}
-      </CardHeader>
-      <div className="space-y-3 p-4">
-        <div className="rounded-md border border-border bg-slate-950">
-          {props.runs.length ? (
-            props.runs.slice(0, 8).map((run) => {
-              const runId = stringValue(run.run_id);
-              return (
-                <button
-                  key={runId}
-                  className="block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900"
-                  onClick={() => runId && props.onReplay(runId)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{stringValue(run.objective)}</span>
-                    <Badge tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "neutral"}>
-                      {stringValue(run.status)}
-                    </Badge>
-                  </div>
-                  <div className="mt-1 truncate text-xs text-muted">{stringValue(run.branch) || stringValue(run.repository_path)}</div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="px-3 py-2 text-sm text-muted">No persisted runs yet.</div>
-          )}
-        </div>
-        <MiniList
-          title="Queued Tasks"
-          items={props.queued.map((task) => `${task.id ?? ""} ${task.objective ?? ""}`)}
+    <section className="bottom-dock" style={{ height }}>
+      <div className="dock-tabs">
+        <DockButton active={tab === "logs"} onClick={() => setTab("logs")} icon={<Terminal size={14} />}>Logs</DockButton>
+        <DockButton active={tab === "tests"} onClick={() => setTab("tests")} icon={<TestTube2 size={14} />}>Tests</DockButton>
+        <DockButton active={tab === "runtime"} onClick={() => setTab("runtime")} icon={<MemoryStick size={14} />}>Runtime</DockButton>
+        <DockButton active={tab === "git"} onClick={() => setTab("git")} icon={<GitBranch size={14} />}>Git</DockButton>
+        <input
+          aria-label="Dock height"
+          className="dock-resizer"
+          type="range"
+          min={220}
+          max={520}
+          value={height}
+          onChange={(event) => setHeight(Number(event.target.value))}
         />
-        <div className="max-h-48 overflow-auto rounded-md border border-border bg-slate-950">
-          {props.replayEvents.length ? (
-            props.replayEvents.map((event, index) => (
-              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
-                <div className="font-medium">{stringValue(event.stage)}</div>
-                <div className="mt-1 truncate text-muted">{stringValue(event.message)}</div>
-              </div>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-xs text-muted">Select a run to replay stored telemetry.</div>
-          )}
-        </div>
       </div>
-    </Card>
+      <div className="dock-content">
+        {tab === "logs" ? <LogStream logs={logs} /> : null}
+        {tab === "tests" ? <TestDock tests={tests} convergence={convergence} acceptance={acceptance} build={build} visual={visual} quality={quality} releaseReport={releaseReport} /> : null}
+        {tab === "runtime" ? <RuntimeDock runtime={runtime} /> : null}
+        {tab === "git" ? <GitDock git={git} commitMessage={commitMessage} setCommitMessage={setCommitMessage} onCommit={onCommit} onRollback={onRollback} replayEvents={replayEvents} /> : null}
+      </div>
+    </section>
   );
 }
 
-function ObjectiveMemoryPanel({ objectives }: { objectives: Array<Record<string, unknown>> }) {
+function LogStream({ logs, compact = false }: { logs: string[]; compact?: boolean }) {
+  const prioritized = useMemo(() => {
+    const execution = logs.filter((line) => /^\d|^\[/.test(line) && /\[(RUN_START|REPOSITORY_SCAN|PLANNING|CODER|SYNTH|JUDGE|PATCH|TEST|REPAIR|CONVERGED|FAILED|SCHEMA|INFER|MODEL_READY|SWAP)\]/.test(line));
+    const rest = logs.filter((line) => !execution.includes(line));
+    return [...execution.slice(-120), ...rest.slice(-60)];
+  }, [logs]);
   return (
-    <Card>
-      <CardHeader title="Run Knowledge Base" action={<Archive size={18} className="text-accent" />}>
-        {objectives.length ? `${objectives.length} objectives` : "empty"}
-      </CardHeader>
-      <div className="max-h-72 overflow-auto p-4">
-        {objectives.length ? (
-          objectives.slice(0, 8).map((objective, index) => (
-            <div key={index} className="mb-2 rounded-md border border-border bg-slate-950 p-3 text-sm last:mb-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-medium">{stringValue(objective.objective)}</span>
-                <Badge tone={objective.outcome === "passed" ? "success" : objective.outcome === "failed" ? "danger" : "neutral"}>
-                  {stringValue(objective.outcome)}
-                </Badge>
-              </div>
-              <div className="mt-1 truncate text-xs text-muted">
-                failures: {asList(objective.failures).join(", ") || "none"}
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="text-sm text-muted">No objective memory recorded yet.</div>
-        )}
-      </div>
-    </Card>
+    <pre className={cn("log-stream", compact && "compact")}>
+      {prioritized.length ? prioritized.join("\n") : "[READY] waiting for Forge execution events"}
+    </pre>
   );
 }
 
-function PatchViewer({ patch }: { patch?: ControlSnapshot["patch"] }) {
-  const diffLines = (patch?.diff ?? "").split("\n");
-  return (
-    <Card>
-      <CardHeader title="Patch Viewer" action={<GitCompare size={18} className="text-accent" />}>
-        {(patch?.changed_files ?? []).join(", ") || "clean"}
-      </CardHeader>
-      <div className="p-4">
-        <pre className="max-h-96 overflow-auto rounded-md border border-border bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-          {diffLines.length && diffLines[0]
-            ? diffLines.map((line, index) => (
-                <div
-                  key={`${index}-${line}`}
-                  className={cn(
-                    line.startsWith("+") && "text-emerald-300",
-                    line.startsWith("-") && "text-red-300",
-                    line.startsWith("@@") && "text-cyan-300"
-                  )}
-                >
-                  {line}
-                </div>
-              ))
-            : "No patch detected."}
-        </pre>
-      </div>
-    </Card>
-  );
-}
-
-function RepositoryExplorer({
-  tree,
-  selectedFile,
-  onOpenFile
+function TestDock({
+  tests,
+  convergence,
+  acceptance,
+  build,
+  visual,
+  quality,
+  releaseReport
 }: {
-  tree: RepoTreeNode | null;
-  selectedFile: { path: string; content: string } | null;
-  onOpenFile: (path: string) => void;
+  tests?: Record<string, unknown>;
+  convergence?: Record<string, unknown>;
+  acceptance?: Record<string, unknown> | null;
+  build?: Record<string, unknown> | null;
+  visual?: Record<string, unknown> | null;
+  quality?: Record<string, unknown> | null;
+  releaseReport?: Record<string, unknown> | null;
 }) {
   return (
-    <Card>
-      <CardHeader title="Repository Explorer" action={<FileCode2 size={18} className="text-accent" />} />
-      <div className="grid gap-3 p-4">
-        <div className="max-h-60 overflow-auto rounded-md border border-border bg-slate-950 p-2 text-sm">
-          {tree ? <TreeNode node={tree} onOpenFile={onOpenFile} /> : <span className="text-muted">No repository loaded.</span>}
-        </div>
-        <pre className="max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-          {selectedFile ? selectedFile.content : "No file selected."}
-        </pre>
-      </div>
-    </Card>
+    <div className="dock-grid">
+      <MetricCard label="test status" value={tests?.status ?? "idle"} icon={<TestTube2 size={16} />} />
+      <MetricCard label="passing" value={tests?.passing ?? 0} icon={<Check size={16} />} />
+      <MetricCard label="failing" value={tests?.failing ?? 0} icon={<XCircle size={16} />} />
+      <MetricCard label="repairs" value={convergence?.current_repair_attempt ?? tests?.repair_attempts ?? 0} icon={<RefreshCw size={16} />} />
+      <MetricCard label="acceptance" value={formatPass(acceptance?.passed)} icon={<ListChecks size={16} />} />
+      <MetricCard label="build" value={formatPass(build?.passed)} icon={<Terminal size={16} />} />
+      <MetricCard label="visual" value={formatPass(visual?.passed)} icon={<LayoutDashboard size={16} />} />
+      <MetricCard label="quality" value={quality?.overall ?? "pending"} icon={<Sparkles size={16} />} />
+      <pre className="release-report">{releaseReport ? JSON.stringify(releaseReport, null, 2) : "Release report will appear after validation."}</pre>
+    </div>
   );
 }
 
-function TreeNode({ node, onOpenFile }: { node: RepoTreeNode; onOpenFile: (path: string) => void }) {
+function RuntimeDock({ runtime }: { runtime?: Record<string, unknown> }) {
+  const diagnostics = objectValue(runtime?.diagnostics);
   return (
-    <div className="pl-2">
-      <button
-        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-slate-800"
-        onClick={() => node.type === "file" && onOpenFile(node.path)}
-      >
-        {node.type === "file" ? <Code2 size={14} /> : <GitBranch size={14} />}
-        <span className="truncate">{node.name}</span>
+    <div className="dock-grid">
+      <MetricCard label="active runtime" value={runtime?.active_runtime ?? "idle"} icon={<Terminal size={16} />} />
+      <MetricCard label="model" value={runtime?.active_model ?? "none"} icon={<Bot size={16} />} />
+      <MetricCard label="load status" value={diagnostics.load_status ?? "idle"} icon={<Activity size={16} />} />
+      <MetricCard label="fallback" value={diagnostics.fallback_status ?? "none"} icon={<RefreshCw size={16} />} />
+      <MetricCard label="VRAM required" value={formatMegabytes(diagnostics.vram_required)} icon={<MemoryStick size={16} />} />
+      <MetricCard label="VRAM free" value={formatMegabytes(diagnostics.free_vram)} icon={<MemoryStick size={16} />} />
+      <MetricCard label="PID" value={runtime?.pid ?? "pending"} icon={<Code2 size={16} />} />
+      <MetricCard label="health" value={runtime?.health ?? "unknown"} icon={<Check size={16} />} />
+      <pre className="runtime-json">{JSON.stringify(runtime ?? {}, null, 2)}</pre>
+    </div>
+  );
+}
+
+function GitDock({
+  git,
+  commitMessage,
+  setCommitMessage,
+  onCommit,
+  onRollback,
+  replayEvents
+}: {
+  git?: Record<string, unknown> | null;
+  commitMessage: string;
+  setCommitMessage: (value: string) => void;
+  onCommit: () => void;
+  onRollback: () => void;
+  replayEvents: Array<Record<string, unknown>>;
+}) {
+  const status = objectValue(git?.status);
+  const changedFiles = Array.isArray(git?.changed_files) ? (git.changed_files as Array<Record<string, unknown>>) : [];
+  const history = Array.isArray(git?.history) ? (git.history as Array<Record<string, unknown>>) : [];
+  return (
+    <div className="git-dock">
+      <div className="git-actions">
+        <MetricCard label="branch" value={status.branch ?? "unknown"} icon={<GitBranch size={16} />} />
+        <MetricCard label="dirty" value={status.is_dirty ? "yes" : "no"} icon={<GitCompare size={16} />} />
+        <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
+        <Button variant="secondary" onClick={onCommit}><GitCommit size={15} /> Commit</Button>
+        <Button variant="danger" onClick={onRollback}><XCircle size={15} /> Rollback</Button>
+      </div>
+      <div className="git-columns">
+        <FileList title="Changed files" files={changedFiles.map((file) => `${file.status ?? "M"} ${file.path ?? ""}`)} />
+        <FileList title="Commit history" files={history.map((commit) => `${String(commit.sha).slice(0, 7)} ${commit.subject ?? ""}`)} />
+        <FileList title="Replay events" files={replayEvents.map((event) => `${event.stage ?? ""}: ${event.message ?? ""}`)} />
+      </div>
+    </div>
+  );
+}
+
+function CommandPalette({
+  open,
+  objective,
+  setObjective,
+  repositoryRoot,
+  setRepositoryRoot,
+  onClose,
+  onRun,
+  onOpenLogs
+}: {
+  open: boolean;
+  objective: string;
+  setObjective: (value: string) => void;
+  repositoryRoot: string;
+  setRepositoryRoot: (value: string) => void;
+  onClose: () => void;
+  onRun: () => void;
+  onOpenLogs: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="palette-backdrop" onClick={onClose}>
+      <div className="command-palette" onClick={(event) => event.stopPropagation()}>
+        <div className="palette-search">
+          <Command size={17} />
+          <input value={objective} onChange={(event) => setObjective(event.target.value)} autoFocus />
+          <button onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="palette-section">
+          <small>Repository</small>
+          <Input value={repositoryRoot} onChange={(event) => setRepositoryRoot(event.target.value)} />
+        </div>
+        <div className="palette-actions">
+          <button onClick={onRun}><Play size={15} /> Run objective</button>
+          <button onClick={onOpenLogs}><Terminal size={15} /> Open logs</button>
+          {promptTemplates.map((template) => <button key={template} onClick={() => setObjective(template)}><Sparkles size={15} /> {template}</button>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TreeNode({ node, query, onOpenFile }: { node: RepoTreeNode; query: string; onOpenFile: (path: string) => void }) {
+  const [open, setOpen] = useState(true);
+  const visible = !query || node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query) || node.children.some((child) => child.path.toLowerCase().includes(query));
+  if (!visible) return null;
+  return (
+    <div className="tree-node">
+      <button onClick={() => node.type === "file" ? onOpenFile(node.path) : setOpen(!open)}>
+        {node.type === "directory" ? (open ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : <FileCode2 size={13} />}
+        <span>{node.name}</span>
       </button>
-      {node.children?.length ? (
-        <div className="border-l border-border pl-3">
-          {node.children.map((child) => (
-            <TreeNode key={child.path} node={child} onOpenFile={onOpenFile} />
-          ))}
+      {node.type === "directory" && open ? (
+        <div className="tree-children">
+          {node.children.map((child) => <TreeNode key={child.path} node={child} query={query} onOpenFile={onOpenFile} />)}
         </div>
       ) : null}
     </div>
   );
 }
 
-function RuntimeMonitor({ runtime }: { runtime?: Record<string, unknown> }) {
-  const diagnostics = (runtime?.diagnostics ?? {}) as Record<string, unknown>;
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <Card>
-      <CardHeader title="Runtime Monitor" action={<Terminal size={18} className="text-accent" />} />
-      <dl className="space-y-2 p-4 text-sm">
-        <Metric label="active runtime" value={runtime?.active_runtime ?? "idle"} />
-        <Metric label="model" value={runtime?.active_model ?? "none"} />
-        <Metric label="load status" value={diagnostics.load_status ?? "idle"} />
-        <Metric label="fallback" value={diagnostics.fallback_status ?? "none"} />
-        <Metric label="vram required" value={formatMegabytes(diagnostics.vram_required)} />
-        <Metric label="vram available" value={formatMegabytes(diagnostics.free_vram)} />
-        <Metric label="pid" value={runtime?.pid ?? "pending"} />
-        <Metric label="pgid" value={runtime?.pgid ?? "pending"} />
-        <Metric label="swap count" value={runtime?.swap_count ?? "pending"} />
-        <Metric label="health" value={runtime?.health ?? "unknown"} />
-        <Metric label="vram" value={formatVram(runtime?.vram)} />
-      </dl>
-    </Card>
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
   );
 }
 
-function LogsPanel({ logs }: { logs: string[] }) {
+function SidebarSection({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <Card>
-      <CardHeader title="Logs Panel" action={<Terminal size={18} className="text-accent" />} />
-      <pre className="max-h-72 overflow-auto p-4 text-xs leading-5">
-        {logs.length ? logs.join("\n") : "[READY] waiting for runtime events"}
-      </pre>
-    </Card>
+    <section className="sidebar-section">
+      <h3>{icon}{title}</h3>
+      {children}
+    </section>
   );
 }
 
-function TestResults({ tests }: { tests?: Record<string, unknown> }) {
-  const status = String(tests?.status ?? "idle");
-  return (
-    <Card>
-      <CardHeader title="Test Results" action={status === "failed" ? <XCircle size={18} className="text-danger" /> : <CheckCircle2 size={18} className="text-success" />} />
-      <dl className="space-y-2 p-4 text-sm">
-        <Metric label="status" value={status} />
-        <Metric label="passing" value={tests?.passing ?? 0} />
-        <Metric label="failing" value={tests?.failing ?? 0} />
-        <Metric label="retries" value={tests?.retries ?? 0} />
-        <Metric label="repairs" value={tests?.repair_attempts ?? 0} />
-      </dl>
-    </Card>
-  );
+function RailIcon({ icon, label, collapsed }: { icon: React.ReactNode; label: string; collapsed: boolean }) {
+  return <div className="rail-icon">{icon}{collapsed ? null : <span>{label}</span>}</div>;
 }
 
-function ConversationView({ items }: { items: Array<Record<string, unknown>> }) {
+function PanelTitle({ icon, title, subtitle }: { icon: React.ReactNode; title: string; subtitle?: string }) {
   return (
-    <Card>
-      <CardHeader title="Conversation View" action={<Bot size={18} className="text-accent" />} />
-      <div className="space-y-2 p-4">
-        {items.length ? (
-          items.map((item, index) => (
-            <div key={index} className="rounded-md border border-border bg-slate-950 p-3 text-sm">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="font-medium">{String(item.role)}</span>
-                <span className="text-xs text-muted">round {String(item.round_id)}</span>
-              </div>
-              <p className="text-sm text-muted">{String(item.summary)}</p>
-            </div>
-          ))
-        ) : (
-          <div className="text-sm text-muted">No summaries available.</div>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className="text-muted">{label}</dt>
-      <dd className="truncate text-right font-medium">{String(value ?? "unknown")}</dd>
+    <div className="panel-title">
+      <div>{icon}<strong>{title}</strong></div>
+      {subtitle ? <span>{subtitle}</span> : null}
     </div>
   );
 }
 
-function formatVram(value: unknown) {
-  if (!value || typeof value !== "object") return "unknown";
-  const vram = value as Record<string, unknown>;
-  if (!vram.available) return "unavailable";
-  return `${vram.memory_used_mb} / ${vram.memory_total_mb} MB`;
+function FileList({ title, files }: { title: string; files: string[] }) {
+  return (
+    <div className="file-list">
+      <div className="file-list-title">{title}<span>{files.length}</span></div>
+      {files.length ? files.slice(0, 24).map((file, index) => <div key={`${title}-${index}-${file}`}><FileCode2 size={13} /> <span>{file}</span></div>) : <p className="empty">None</p>}
+    </div>
+  );
+}
+
+function MetricCard({ label, value, icon }: { label: string; value: unknown; icon: React.ReactNode }) {
+  return (
+    <div className="metric-card">
+      <div>{icon}<span>{label}</span></div>
+      <strong>{String(value ?? "unknown")}</strong>
+    </div>
+  );
+}
+
+function MetricInline({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="metric-inline">
+      <span>{label}</span>
+      <strong>{String(value ?? "unknown")}</strong>
+    </div>
+  );
+}
+
+function MemoryMetric({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="memory-metric">
+      <strong>{String(value ?? 0)}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function StatGrid({ items }: { items: Array<[string, unknown]> }) {
+  return (
+    <div className="stat-grid">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{String(value ?? "unknown")}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return <button className={cn(active && "active")} onClick={onClick}>{children}</button>;
+}
+
+function DockButton({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
+  return <button className={cn(active && "active")} onClick={onClick}>{icon}{children}</button>;
+}
+
+function StatusPill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "success" | "warning" | "danger" | "accent" }) {
+  return <span className={cn("status-pill", tone)}>{children}</span>;
+}
+
+function generatedFileNames(artifacts: ArtifactSummary[], plan?: Record<string, unknown> | null): string[] {
+  const files = new Set(asList(plan?.files_to_create));
+  artifacts.forEach((artifact) => {
+    try {
+      const parsed = JSON.parse(artifact.content) as Record<string, unknown>;
+      const generated = objectValue(parsed.files);
+      Object.keys(generated).forEach((path) => files.add(path));
+    } catch {
+      // Artifacts are sometimes summaries; non-JSON output is already visible in preview.
+    }
+  });
+  return Array.from(files);
+}
+
+function phasePercent(phase: string) {
+  const index = phases.indexOf(phase);
+  if (phase === "CONVERGED") return 100;
+  if (phase === "FAILED") return 100;
+  return index >= 0 ? Math.round(((index + 1) / phases.length) * 100) : 3;
+}
+
+function inferStageStatus(name: string, phase: string) {
+  const current = phases.indexOf(phase);
+  const index = phases.indexOf(name);
+  if (phase === "CONVERGED") return "completed";
+  if (phase === "FAILED" && index === current) return "failed";
+  if (index < current) return "completed";
+  if (index === current) return "active";
+  return "pending";
+}
+
+function formatPhase(value: string) {
+  return value.toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatPass(value: unknown) {
+  return value === undefined || value === null ? "pending" : value ? "passed" : "failed";
 }
 
 function formatMegabytes(value: unknown) {
