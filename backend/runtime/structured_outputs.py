@@ -10,34 +10,49 @@ class StructuredOutputError(ValueError):
 
 
 def validate_role_output(role: str, text: str) -> str:
-    data = _parse_strict_json(text)
+    candidates = _parse_json_candidates(text)
+    if not candidates:
+        raise StructuredOutputError("Response must contain a valid JSON object.")
+    errors: list[StructuredOutputError] = []
+    for data in candidates:
+        try:
+            normalized = _validate_role_data(role, data)
+            return json.dumps(normalized, indent=2, sort_keys=True)
+        except StructuredOutputError as exc:
+            errors.append(exc)
+    raise errors[0] if errors else StructuredOutputError("Response must contain a valid JSON object.")
+
+
+def _validate_role_data(role: str, data: dict[str, Any]) -> dict[str, Any]:
     if role == "PRIMARY_CODER":
-        normalized = _validate_primary(data)
+        return _validate_primary(data)
     elif role == "DEEPSEEK_SYNTH":
-        normalized = _validate_synth(data)
+        return _validate_synth(data)
     elif role == "JUDGE":
-        normalized = _validate_judge(data)
+        return _validate_judge(data)
     else:
         raise StructuredOutputError(f"Unknown courtroom role: {role}")
-    return json.dumps(normalized, indent=2, sort_keys=True)
 
 
-def _parse_strict_json(text: str) -> dict[str, Any]:
+def _parse_json_candidates(text: str) -> list[dict[str, Any]]:
     stripped = text.strip()
+    candidates: list[dict[str, Any]] = []
     try:
         if stripped.startswith("{") and stripped.endswith("}"):
             data = json.loads(stripped)
+            if isinstance(data, dict):
+                candidates.append(data)
+                return candidates
         else:
-            data = _extract_first_json_object(stripped)
+            candidates = _extract_json_objects(stripped)
     except json.JSONDecodeError as exc:
         raise StructuredOutputError("Response is not valid JSON.") from exc
-    if not isinstance(data, dict):
-        raise StructuredOutputError("Response JSON must be an object.")
-    return data
+    return candidates
 
 
-def _extract_first_json_object(text: str) -> dict[str, Any]:
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
     for index, char in enumerate(text):
         if char != "{":
             continue
@@ -46,8 +61,8 @@ def _extract_first_json_object(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict):
-            return data
-    raise StructuredOutputError("Response must contain a valid JSON object.")
+            candidates.append(data)
+    return candidates
 
 
 def _validate_primary(data: dict[str, Any]) -> dict[str, Any]:

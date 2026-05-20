@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-_APPROX_CHARS_PER_TOKEN = 4
+_APPROX_CHARS_PER_TOKEN = 3
 
 
 @dataclass(slots=True)

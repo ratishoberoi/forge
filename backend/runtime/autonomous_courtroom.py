@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 import time
+import inspect
 from collections.abc import Callable
 from backend.runtime.artifact import CognitionArtifact
 from backend.runtime.artifact_exchange import ArtifactExchange
@@ -39,7 +40,7 @@ class AutonomousCourtroom:
     DEFAULT_STAGE_ATTEMPTS = 2
     DEFAULT_INFERENCE_ATTEMPTS = 2
     DEFAULT_CONTEXT_WINDOW = 8192
-    DEFAULT_CONTEXT_SAFETY = 256
+    DEFAULT_CONTEXT_SAFETY = 512
 
     CODER_MODEL_PATH = "~/Forge/models/qwen-primary"
     CODER_MODEL_NAME = "qwen-primary"
@@ -403,21 +404,54 @@ class AutonomousCourtroom:
         Uses explicit model_name — no more role-to-name mapping needed.
         """
         system_prompt = self._system_prompt_for_role(role)
+        max_tokens = self._max_tokens_for_role(role)
         prompt = self._budget_prompt(
             role=role,
             prompt=prompt,
             system_prompt=system_prompt,
-            max_tokens=LocalInference.DEFAULT_MAX_TOKENS,
+            max_tokens=max_tokens,
         )
-        raw_content = self.inference.infer(
-            port=self.port,
-            model=model_name,
+        raw_content = self._infer_raw(
+            role=role,
+            model_name=model_name,
             prompt=prompt,
             system_prompt=system_prompt,
+            max_tokens=max_tokens,
         )
         self._emit(f"[RAW_MODEL_OUTPUT] {role} chars={len(raw_content)} preview={raw_content[:180]!r}")
         recovered = _requires_json_recovery(raw_content)
-        content = validate_role_output(role, raw_content)
+        try:
+            content = validate_role_output(role, raw_content)
+        except StructuredOutputError as exc:
+            self._emit(f"[SCHEMA_REPAIR] {role} {exc}")
+            repair_max_tokens = self._repair_max_tokens_for_role(role, max_tokens)
+            repair_prompt = self._schema_retry_prompt(
+                role=role,
+                original_prompt=prompt,
+                error=str(exc),
+                raw_output=raw_content,
+            )
+            repair_prompt = self._budget_prompt(
+                role=role,
+                prompt=repair_prompt,
+                system_prompt=system_prompt,
+                max_tokens=repair_max_tokens,
+                safety_tokens=128,
+            )
+            self._emit(f"[SCHEMA_RETRY] {role} requesting strict JSON correction")
+            repaired_content = self._infer_raw(
+                role=role,
+                model_name=model_name,
+                prompt=repair_prompt,
+                system_prompt=system_prompt,
+                max_tokens=repair_max_tokens,
+            )
+            self._emit(
+                f"[RAW_MODEL_OUTPUT] {role} repair_chars={len(repaired_content)} "
+                f"preview={repaired_content[:180]!r}"
+            )
+            recovered = recovered or _requires_json_recovery(repaired_content)
+            content = validate_role_output(role, repaired_content)
         if recovered:
             self._emit(f"[JSON_RECOVERY] {role} extracted top-level JSON object")
         self._emit(f"[SCHEMA_VALIDATION] {role} valid")
@@ -436,6 +470,60 @@ class AutonomousCourtroom:
         self.exchange.persist(artifact)
         return artifact
 
+    def _infer_raw(
+        self,
+        *,
+        role: str,
+        model_name: str,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        kwargs = {
+            "port": self.port,
+            "model": model_name,
+            "prompt": prompt,
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+            "system_prompt": system_prompt,
+        }
+        if self._inference_accepts_response_format():
+            kwargs["response_format"] = self._response_format_for_role(role)
+        try:
+            return self.inference.infer(**kwargs)
+        except TypeError as exc:
+            if "response_format" not in str(exc):
+                raise
+            kwargs.pop("response_format", None)
+            return self.inference.infer(**kwargs)
+
+    @staticmethod
+    def _response_format_for_role(role: str) -> dict[str, str]:
+        return {"type": "json_object"}
+
+    def _inference_accepts_response_format(self) -> bool:
+        try:
+            signature = inspect.signature(self.inference.infer)
+        except (TypeError, ValueError):
+            return True
+        return (
+            "response_format" in signature.parameters
+            or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+        )
+
+    def _max_tokens_for_role(self, role: str) -> int:
+        if role == self.CODER_ROLE:
+            return min(900, max(LocalInference.DEFAULT_MAX_TOKENS, self.context_window // 3))
+        return LocalInference.DEFAULT_MAX_TOKENS
+
+    def _repair_max_tokens_for_role(self, role: str, current: int) -> int:
+        if role == self.CODER_ROLE:
+            return min(1600, max(current, self.context_window - 448))
+        return current
+
     def _cleanup_active_runtime(self) -> None:
         try:
             self.swap_engine.shutdown_active()
@@ -450,6 +538,7 @@ class AutonomousCourtroom:
             "Implement the requested functionality, not an objective summary, "
             "README-only change, health-check stub, or placeholder.\n"
             "Return ONLY a JSON object with no markdown and no prose:\n"
+            "NO THINKING. NO ANALYSIS. NO EXPLANATION.\n"
             "Your response must start with { and end with }. "
             "Before returning, internally verify it parses as JSON. "
             "Do not include a preamble, epilogue, code fence, or explanation.\n"
@@ -462,6 +551,7 @@ class AutonomousCourtroom:
         common = (
             "Return exactly one valid JSON object. Do not include markdown, "
             "backticks, comments, analysis, preamble, epilogue, or prose outside JSON. "
+            "Do not output a thinking process. Do not explain your reasoning. "
             "The first character must be { and the final character must be }. "
             "Before returning, silently verify the response parses as JSON."
         )
@@ -488,20 +578,71 @@ class AutonomousCourtroom:
             "outputs that do not implement the requested functionality."
         )
 
-    @staticmethod
     def _schema_retry_prompt(
+        self,
         *,
         role: str,
         original_prompt: str,
         error: str,
+        raw_output: str = "",
     ) -> str:
+        compact_task = self._compact_retry_task(role=role, original_prompt=original_prompt)
         return (
             "Your previous response violated the required output schema.\n"
             f"Schema error: {error}\n\n"
             "Return ONLY valid JSON. No prose. No markdown. No code fences. "
-            "No explanation. The response must start with { and end with }.\n\n"
-            f"Original task for {role}:\n{original_prompt}"
+            "No thinking process. No analysis. No explanation. "
+            "The response must start with { and end with }.\n\n"
+            f"Task for {role}:\n{compact_task}"
         )
+
+    def _compact_retry_task(self, *, role: str, original_prompt: str) -> str:
+        if role != self.CODER_ROLE:
+            return original_prompt[:2500]
+        objective = self._extract_line_after(original_prompt, "Active objective:")
+        paths = self._extract_path_mentions(original_prompt)
+        path_text = "\n".join(f"- {path}" for path in paths[:16])
+        return (
+            f"Active objective: {objective or original_prompt[:300]}\n"
+            "Return a PRIMARY_CODER payload with this exact schema:\n"
+            "{\"summary\":\"non-empty summary\",\"files\":{\"path\":\"complete file content\"}}\n"
+            "Create complete functional source and test files for every required application file.\n"
+            "Required file paths:\n"
+            f"{path_text}"
+        )
+
+    @staticmethod
+    def _extract_line_after(text: str, prefix: str) -> str:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                return stripped[len(prefix):].strip()
+        return ""
+
+    @staticmethod
+    def _extract_path_mentions(text: str) -> list[str]:
+        candidates = [
+            "requirements.txt",
+            "pyproject.toml",
+            "package.json",
+            "index.html",
+            "README.md",
+            "Dockerfile",
+            "calculator.py",
+            "app/__init__.py",
+            "app/main.py",
+            "app/models.py",
+            "app/database.py",
+            "app/schemas.py",
+            "app/repository.py",
+            "tests/test_todos.py",
+            "tests/test_app.py",
+            "tests/test_calculator.py",
+            "src/main.jsx",
+            "src/App.jsx",
+            "tests/app.test.mjs",
+        ]
+        return [path for path in candidates if path in text]
 
     def _budget_prompt(
         self,
@@ -510,6 +651,7 @@ class AutonomousCourtroom:
         prompt: str,
         system_prompt: str,
         max_tokens: int,
+        safety_tokens: int | None = None,
     ) -> str:
         budget = ContextBudgetManager()
         input_tokens = budget.estimate_tokens(prompt) + budget.estimate_tokens(system_prompt)
@@ -518,7 +660,9 @@ class AutonomousCourtroom:
             f"[TOKEN_ESTIMATE] {role} input={input_tokens} "
             f"output={max_tokens} total={total_tokens} limit={self.context_window}"
         )
-        allowed_input = self.context_window - max_tokens - self.DEFAULT_CONTEXT_SAFETY
+        allowed_input = self.context_window - max_tokens - (
+            self.DEFAULT_CONTEXT_SAFETY if safety_tokens is None else safety_tokens
+        )
         if input_tokens <= allowed_input:
             return prompt
         allowed_prompt_tokens = max(1, allowed_input - budget.estimate_tokens(system_prompt))

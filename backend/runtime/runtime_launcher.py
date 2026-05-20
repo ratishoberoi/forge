@@ -260,7 +260,7 @@ class RuntimeLauncher:
             RuntimeLaunchProfile(
                 max_model_len=min(self.max_model_len, 4096),
                 gpu_memory_utilization=f"{max(base_gpu, 0.95):.2f}",
-                max_num_seqs=min(self.max_num_seqs, 16),
+                max_num_seqs=min(self.max_num_seqs, 2),
                 enforce_eager=True,
                 reason="reduced_context_cache_recovery",
             ),

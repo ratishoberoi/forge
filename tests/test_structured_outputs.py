@@ -68,6 +68,24 @@ Here is the patch:
     assert json.loads(normalized)["files"]["app/main.py"] == "print('ok')\n"
 
 
+def test_primary_coder_skips_schema_example_before_final_json():
+    payload = '''
+Thinking Process:
+The schema is {"summary": "", "files": {}}.
+
+{
+  "summary": "Build app",
+  "files": {
+    "app/main.py": "print('ok')\\n"
+  }
+}
+'''
+
+    normalized = validate_role_output("PRIMARY_CODER", payload)
+
+    assert json.loads(normalized)["summary"] == "Build app"
+
+
 def test_primary_coder_recovers_json_code_fence():
     payload = '''```json
 {

@@ -410,6 +410,8 @@ class ControlCenterState:
         with self._lock:
             self._runs[record.id] = record
             self.log(f"[RUN] queued {record.id}: {request.objective}")
+            for line in _classification_log_lines(objective=request.objective, source="control.state.create_run"):
+                self.log(f"{line} run_id={record.id}")
             self.log(f"[OBJECTIVE_CLASSIFICATION] {record.id}: {classify_objective(request.objective).value}")
             self.log(f"[STATE] {record.id} -> QUEUED")
         return record
@@ -476,7 +478,10 @@ class ControlCenterState:
     def stop(self, run_id: str) -> RunRecord:
         record = self.get_run(run_id)
         record.stop_requested = True
-        if record.status in {"queued", "running", "paused"}:
+        if record.status == "queued":
+            record.status = "cancelled"
+            record.completed_at = datetime.now(timezone.utc)
+        elif record.status in {"running", "paused"}:
             record.status = "stopping"
         record.touch()
         self.log(f"[RUN] stop requested {run_id}")
@@ -590,6 +595,15 @@ def get_control_state() -> ControlCenterState:
     if not hasattr(router, "_control_state"):
         router._control_state = ControlCenterState()  # type: ignore[attr-defined]
     return router._control_state  # type: ignore[attr-defined]
+
+
+def _classification_log_lines(*, objective: str, source: str) -> list[str]:
+    classification = classify_objective(objective).value
+    return [
+        f"[CLASSIFIER_INPUT] source={source} objective={objective!r}",
+        f"[CLASSIFIER_OUTPUT] source={source} classification={classification}",
+        f"[CLASSIFIER_SOURCE] source={source} function=backend.runtime.repository_execution_engine.classify_objective",
+    ]
 
 
 @router.get("/health")
@@ -730,7 +744,16 @@ async def create_run(request: RunRequest) -> RunSummary:
     if request.repository_id:
         try:
             repository = state.workspace_manager.get_repository(request.repository_id)
-            request = request.model_copy(update={"repository_root": repository.repository_path})
+            requested_root = Path(request.repository_root).resolve()
+            repository_root = Path(repository.repository_path).resolve()
+            if requested_root == repository_root:
+                request = request.model_copy(update={"repository_root": repository.repository_path})
+            else:
+                state.log(
+                    f"[CONTROL] repository_id/root mismatch; using explicit repository_root "
+                    f"{requested_root} instead of {repository_root}"
+                )
+                request = request.model_copy(update={"repository_id": None})
         except WorkspaceManagerError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
     repo_root = Path(request.repository_root).resolve()
@@ -751,6 +774,8 @@ async def create_run(request: RunRequest) -> RunSummary:
     with state._lock:
         state._runs[record.id] = record
         state.log(f"[RUN] queued {record.id}: {request.objective}")
+        for line in _classification_log_lines(objective=request.objective, source="control.create_run"):
+            state.log(f"{line} run_id={record.id}")
         state.log(f"[OBJECTIVE_CLASSIFICATION] {record.id}: {classify_objective(request.objective).value}")
         state.log(f"[STATE] {record.id} -> QUEUED")
     if request.execute:

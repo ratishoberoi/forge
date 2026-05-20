@@ -204,10 +204,14 @@ export default function ControlCenterPage() {
 
   async function startRun() {
     const command = testCommand.split(" ").filter(Boolean);
+    const activeRepository = snapshot?.active_repository;
+    const activeRepositoryPath = stringValue(activeRepository?.repository_path);
+    const activeRepositoryId = stringValue(activeRepository?.repository_id);
+    const repositoryId = activeRepositoryPath === repositoryRoot ? activeRepositoryId : null;
     const run = await createRun({
       objective,
       repository_root: repositoryRoot,
-      repository_id: stringValue(snapshot?.active_repository?.repository_id) || null,
+      repository_id: repositoryId,
       target_file: targetFile,
       test_command: command.length ? command : ["pytest", "-q"],
       max_iterations: iterations,

@@ -95,7 +95,7 @@ def test_control_center_run_lifecycle_without_execution(tmp_path) -> None:
 
     stop = client.post(f"/api/control/runs/{run['id']}/stop")
     assert stop.status_code == 200
-    assert stop.json()["status"] == "stopping"
+    assert stop.json()["status"] == "cancelled"
 
 
 def test_control_center_workspace_git_and_history_apis(tmp_path) -> None:
@@ -461,7 +461,14 @@ def test_snapshot_uses_latest_run_objective_not_stale_inspect_repository(tmp_pat
     assert "app/database.py" in plan["files_to_create"]
     assert "app/schemas.py" in plan["files_to_create"]
     assert "app/repository.py" in plan["files_to_create"]
+    assert "requirements.txt" in plan["files_to_create"]
+    assert "README.md" in plan["files_to_create"]
+    assert "Dockerfile" in plan["files_to_create"]
+    assert plan["files_to_create"]
+    assert set(plan["files_to_modify"]) != {"app/main.py", "tests/test_app.py"}
     assert "tests/test_todos.py" in plan["expected_tests"]
+    assert any("[CLASSIFIER_INPUT]" in line for line in body["logs"])
+    assert any("[CLASSIFIER_OUTPUT]" in line and "APPLICATION" in line for line in body["logs"])
 
 
 def test_execution_logs_are_prioritized_before_runtime_logs(tmp_path, monkeypatch) -> None:

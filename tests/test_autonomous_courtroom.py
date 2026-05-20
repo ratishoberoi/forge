@@ -47,6 +47,7 @@ class FakeInference:
         temperature: float = 0.2,
         max_tokens: int = 300,
         system_prompt: str | None = None,
+        response_format: dict | None = None,
     ) -> str:
         if model == "qwen-primary":
             return json.dumps({
@@ -89,6 +90,17 @@ class FlakyInference(FakeInference):
         self.calls += 1
         if self.calls == 1:
             return "thinking before malformed output"
+        return super().infer(**kwargs)
+
+
+class SchemaRepairInference(FakeInference):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def infer(self, **kwargs) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return "Thinking Process:\n1. Analyze request\n\n{\"summary\": \"\", \"files\": {}}"
         return super().infer(**kwargs)
 
 
@@ -229,6 +241,27 @@ def test_autonomous_courtroom_retries_malformed_output(tmp_path):
 
     assert len(artifacts) == 3
     assert inference.calls == 4
+
+
+def test_autonomous_courtroom_repairs_malformed_schema_without_relaunch(tmp_path):
+    engine, launcher, _ = make_swap_engine()
+    inference = SchemaRepairInference()
+    telemetry: list[str] = []
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=inference,
+        telemetry=telemetry.append,
+    )
+    courtroom.health = FakeHealth()
+
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert len(artifacts) == 3
+    assert inference.calls == 4
+    assert launcher.launched == ["PRIMARY_CODER", "DEEPSEEK_SYNTH", "JUDGE"]
+    assert any("[SCHEMA_REPAIR] PRIMARY_CODER" in line for line in telemetry)
+    assert any("[SCHEMA_RETRY] PRIMARY_CODER" in line for line in telemetry)
 
 
 def test_autonomous_courtroom_synth_references_coder(tmp_path):

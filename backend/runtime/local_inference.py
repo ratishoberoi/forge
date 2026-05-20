@@ -37,6 +37,7 @@ class LocalInference:
         temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         system_prompt: str | None = None,
+        response_format: dict | None = None,
     ) -> str:
         """
         Call inference endpoint and return assistant content.
@@ -53,10 +54,11 @@ class LocalInference:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if response_format:
+            payload["response_format"] = response_format
 
         try:
-            response = requests.post(url, json=payload, timeout=self.timeout)
-            response.raise_for_status()
+            response = self._post(url, payload)
             data = response.json()
             return self._extract_content(data, url)
 
@@ -80,6 +82,19 @@ class LocalInference:
             raise LocalInferenceError(
                 f"Inference failed at {url}: {exc}"
             ) from exc
+
+    def _post(self, url: str, payload: dict) -> requests.Response:
+        response = requests.post(url, json=payload, timeout=self.timeout)
+        if (
+            response.status_code == 400
+            and "response_format" in payload
+            and "response_format" in response.text
+        ):
+            fallback_payload = dict(payload)
+            fallback_payload.pop("response_format", None)
+            response = requests.post(url, json=fallback_payload, timeout=self.timeout)
+        response.raise_for_status()
+        return response
 
     def health_check(self, port: int) -> bool:
         """

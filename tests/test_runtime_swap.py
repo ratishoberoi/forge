@@ -261,7 +261,7 @@ def test_runtime_launcher_fallbacks_when_precheck_reports_insufficient_memory(
     command = launched_commands[0]
     assert launched.active is True
     assert command[command.index("--max-model-len") + 1] == "4096"
-    assert command[command.index("--max-num-seqs") + 1] == "16"
+    assert command[command.index("--max-num-seqs") + 1] == "2"
     assert "--enforce-eager" in command
     assert launched.metadata["runtime_diagnostics"]["fallback_status"] == "reduced_context_cache_recovery"
     assert any(item["load_status"] == "precheck" for item in diagnostics)

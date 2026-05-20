@@ -258,6 +258,9 @@ class RepositoryExecutionEngine:
             raise RepositoryExecutionError("objective must not be blank.")
         telemetry = telemetry_callback or (lambda _message: None)
         objective_type = classify_objective(objective)
+        telemetry(f"[CLASSIFIER_INPUT] source=repository.prepare objective={objective!r}")
+        telemetry(f"[CLASSIFIER_OUTPUT] source=repository.prepare classification={objective_type.value}")
+        telemetry("[CLASSIFIER_SOURCE] source=repository.prepare function=backend.runtime.repository_execution_engine.classify_objective")
         telemetry(f"[ACTIVE_REPOSITORY] {self.repo_root}")
         telemetry(f"[OBJECTIVE_CLASSIFICATION] {objective_type.value}")
         scan_result = await self.scanner.scan(str(self.repo_root))
@@ -265,6 +268,11 @@ class RepositoryExecutionEngine:
         summary = self._build_summary(files)
         context = self._build_context(objective, files, summary)
         plan = self._build_plan(objective, summary, context)
+        telemetry(
+            f"[PLANNING] objective_type={plan.objective_type.value} "
+            f"files_to_create={len(plan.files_to_create)} "
+            f"files_to_modify={len(plan.files_to_modify)}"
+        )
         telemetry(f"[REPOSITORY_SCAN] files={summary.files_scanned} language={summary.primary_language}")
         memory = self.architecture_memory.upsert_from_preparation(
             repository_path=str(self.repo_root),
@@ -1031,6 +1039,13 @@ def _is_bootstrap_placeholder_path(path: str) -> bool:
 
 def _looks_like_placeholder(text: str) -> bool:
     lowered = text.lower()
+    normalized = "\n".join(line.strip() for line in text.strip().splitlines())
+    if "bootstrapped for objective" in lowered:
+        return True
+    if (
+        normalized == 'FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nCMD ["python", "-m", "app.main"]'
+    ):
+        return True
     if "objective_summary" in lowered and not any(term in lowered for term in ("class todo", "/todos", "def add", "landing")):
         return True
     placeholder_terms = ("todo: implement", "not implemented", "placeholder", "coming soon")
