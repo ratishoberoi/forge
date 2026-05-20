@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 import uuid
 import asyncio
 from collections import deque
@@ -20,8 +19,18 @@ from pydantic import BaseModel, Field
 
 from backend.config.settings import Settings, get_settings
 from backend.runtime.artifact_loader import ArtifactLoader
+from backend.runtime.architecture_memory import ArchitectureMemory
 from backend.runtime.autonomous_run import AutonomousRun
+from backend.runtime.benchmark_suite import BenchmarkCase, BenchmarkSuite
 from backend.runtime.git_diff import GitDiff, GitDiffError
+from backend.runtime.git_manager import GitManager, GitManagerError
+from backend.runtime.repository_execution_engine import (
+    RepositoryExecutionEngine,
+    RepositoryExecutionError,
+)
+from backend.runtime.run_history import RunHistoryError, RunHistoryStore
+from backend.runtime.long_horizon import ObjectiveMemory
+from backend.runtime.workspace_manager import WorkspaceManager, WorkspaceManagerError
 
 
 RunStatus = Literal[
@@ -51,6 +60,7 @@ TIMELINE_STAGES = (
 class RunRequest(BaseModel):
     objective: str = Field(min_length=1)
     repository_root: str
+    repository_id: str | None = None
     target_file: str
     test_command: list[str] = Field(default_factory=lambda: ["pytest", "-q"])
     max_iterations: int = Field(default=3, ge=1, le=20)
@@ -64,6 +74,7 @@ class RunSummary(BaseModel):
     id: str
     objective: str
     repository_root: str
+    repository_id: str | None = None
     target_file: str
     test_command: list[str]
     max_iterations: int
@@ -106,8 +117,72 @@ class ControlCenterSnapshot(BaseModel):
     artifacts: list[ArtifactSummary]
     patch: dict[str, object]
     tests: dict[str, object]
+    convergence: dict[str, object]
     logs: list[str]
     conversation: list[dict[str, object]]
+    repository_summary: dict[str, object] | None = None
+    architecture_summary: str | None = None
+    execution_plan: dict[str, object] | None = None
+    repositories: list[dict[str, object]] = Field(default_factory=list)
+    active_repository: dict[str, object] | None = None
+    git: dict[str, object] | None = None
+    run_history: list[dict[str, object]] = Field(default_factory=list)
+    queued_tasks: list[dict[str, object]] = Field(default_factory=list)
+    architecture_memory: dict[str, object] | None = None
+    task_plan: dict[str, object] | None = None
+    execution_graph: dict[str, object] | None = None
+    compressed_context: dict[str, object] | None = None
+    objective_memory: list[dict[str, object]] = Field(default_factory=list)
+    bootstrap: dict[str, object] | None = None
+    acceptance: dict[str, object] | None = None
+    build_validation: dict[str, object] | None = None
+    visual_validation: dict[str, object] | None = None
+    quality_score: dict[str, object] | None = None
+    release_report: dict[str, object] | None = None
+
+
+class ImportRepositoryRequest(BaseModel):
+    path: str
+    repository_name: str | None = None
+    set_active: bool = True
+
+
+class CloneRepositoryRequest(BaseModel):
+    source: str
+    repository_name: str | None = None
+    set_active: bool = True
+
+
+class BranchRequest(BaseModel):
+    repository_root: str | None = None
+    repository_id: str | None = None
+    branch: str
+
+
+class CommitRequest(BaseModel):
+    repository_root: str | None = None
+    repository_id: str | None = None
+    message: str
+
+
+class RollbackRequest(BaseModel):
+    repository_root: str | None = None
+    repository_id: str | None = None
+    target: str = "HEAD"
+    clean_untracked: bool = False
+
+
+class RevertRequest(BaseModel):
+    repository_root: str | None = None
+    repository_id: str | None = None
+    commit_sha: str
+    no_commit: bool = False
+
+
+class BenchmarkRequest(BaseModel):
+    root: str = ".forge/benchmarks"
+    cleanup: bool = True
+    cases: list[dict[str, object]] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -132,6 +207,7 @@ class RunRecord:
             id=self.id,
             objective=self.request.objective,
             repository_root=self.request.repository_root,
+            repository_id=self.request.repository_id,
             target_file=self.request.target_file,
             test_command=self.request.test_command,
             max_iterations=self.request.max_iterations,
@@ -153,6 +229,9 @@ class ControlCenterState:
         self._runs: dict[str, RunRecord] = {}
         self._logs: deque[str] = deque(maxlen=500)
         self._lock = Lock()
+        self._execution_lock = Lock()
+        self.workspace_manager = WorkspaceManager()
+        self.run_history = RunHistoryStore()
 
     def create_run(self, request: RunRequest) -> RunRecord:
         record = RunRecord(request=request)
@@ -222,6 +301,10 @@ class ControlCenterState:
         return record
 
     def execute_run(self, run_id: str) -> None:
+        with self._execution_lock:
+            self._execute_run_locked(run_id)
+
+    def _execute_run_locked(self, run_id: str) -> None:
         record = self.get_run(run_id)
         if record.stop_requested:
             record.status = "cancelled"
@@ -234,7 +317,14 @@ class ControlCenterState:
         record.started_at = datetime.now(timezone.utc)
         record.touch()
         self.log(f"[RUN] started {run_id}")
+        branch: str | None = None
         try:
+            self.run_history.record_started(
+                run_id=record.id,
+                objective=record.request.objective,
+                repository_id=record.request.repository_id,
+                repository_path=record.request.repository_root,
+            )
             runner = AutonomousRun(
                 repo_root=record.request.repository_root,
                 artifact_dir=record.request.artifact_dir,
@@ -245,13 +335,32 @@ class ControlCenterState:
                 target_file=record.request.target_file,
                 test_command=record.request.test_command,
                 max_iterations=record.request.max_iterations,
+                run_id=record.id,
             )
             record.result = result
+            branch = result.get("execution_branch") if isinstance(result, dict) else None
             record.status = "completed"
+            self.run_history.record_completed(
+                run_id=record.id,
+                status=record.status,
+                result=result,
+                telemetry=_telemetry_from_result(result),
+                branch=branch,
+            )
             self.log(f"[RUN] completed {run_id}")
         except Exception as exc:
             record.error = str(exc)
             record.status = "failed"
+            try:
+                self.run_history.record_completed(
+                    run_id=record.id,
+                    status=record.status,
+                    result=record.result,
+                    telemetry=[f"[RUN] failed {record.id}: {exc}"],
+                    branch=branch,
+                )
+            except RunHistoryError:
+                pass
             self.log(f"[RUN] failed {run_id}: {exc}")
         finally:
             record.completed_at = datetime.now(timezone.utc)
@@ -267,6 +376,15 @@ def get_control_state() -> ControlCenterState:
     return router._control_state  # type: ignore[attr-defined]
 
 
+@router.get("/health")
+async def health() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "backend": "forge-control-center",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.get("/snapshot", response_model=ControlCenterSnapshot)
 async def snapshot(
     repository_root: str | None = None,
@@ -277,6 +395,16 @@ async def snapshot(
     repo_root = repository_root or (active.request.repository_root if active else os.getcwd())
     artifacts = _load_artifacts(artifact_dir)
     latest_result = _latest_result(state)
+    repositories = [record.to_dict() for record in state.workspace_manager.list_repositories()]
+    active_repository = (
+        state.workspace_manager.active_repository().to_dict()
+        if state.workspace_manager.active_repository()
+        else None
+    )
+    preparation = await _repository_preparation(
+        repo_root,
+        active.request.objective if active else "Inspect repository",
+    )
     return ControlCenterSnapshot(
         generated_at=datetime.now(timezone.utc).isoformat(),
         active_run=active.summary() if active else None,
@@ -287,17 +415,54 @@ async def snapshot(
         artifacts=artifacts,
         patch=_patch_snapshot(repo_root),
         tests=_tests_snapshot(latest_result),
-        logs=_combined_logs(state),
+        convergence=_convergence_snapshot(latest_result),
+        logs=_combined_logs(state, latest_result),
         conversation=_conversation_summaries(artifacts),
+        repository_summary=preparation["scan"] if preparation else None,
+        architecture_summary=(
+            preparation["scan"].get("architecture_summary")
+            if preparation and isinstance(preparation.get("scan"), dict)
+            else None
+        ),
+        execution_plan=preparation["plan"] if preparation else None,
+        repositories=repositories,
+        active_repository=active_repository,
+        git=_git_snapshot(repo_root),
+        run_history=[record.to_dict() for record in state.run_history.list_runs()[:25]],
+        queued_tasks=[record.summary().model_dump() for record in state.runs() if record.status == "queued"],
+        architecture_memory=(
+            preparation.get("architecture_memory")
+            if preparation and isinstance(preparation.get("architecture_memory"), dict)
+            else _architecture_memory_snapshot(repo_root)
+        ),
+        task_plan=preparation.get("task_plan") if preparation else None,
+        execution_graph=preparation.get("execution_graph") if preparation else None,
+        compressed_context=preparation.get("compressed_context") if preparation else None,
+        objective_memory=[
+            record.to_dict()
+            for record in ObjectiveMemory().list_records(repository_path=repo_root)[:20]
+        ],
+        bootstrap=_result_section(latest_result, "bootstrap"),
+        acceptance=_result_section(latest_result, "acceptance"),
+        build_validation=_result_section(latest_result, "build_validation"),
+        visual_validation=_result_section(latest_result, "visual_validation"),
+        quality_score=_result_section(latest_result, "quality_score"),
+        release_report=_result_section(latest_result, "release_report"),
     )
 
 
 @router.post("/runs", response_model=RunSummary)
 async def create_run(request: RunRequest, background_tasks: BackgroundTasks) -> RunSummary:
+    state = get_control_state()
+    if request.repository_id:
+        try:
+            repository = state.workspace_manager.get_repository(request.repository_id)
+            request = request.model_copy(update={"repository_root": repository.repository_path})
+        except WorkspaceManagerError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     repo_root = Path(request.repository_root).resolve()
     if not repo_root.exists() or not repo_root.is_dir():
         raise HTTPException(status_code=400, detail=f"repository_root does not exist: {repo_root}")
-    state = get_control_state()
     record = state.create_run(request.model_copy(update={"repository_root": str(repo_root)}))
     if request.execute:
         background_tasks.add_task(state.execute_run, record.id)
@@ -389,7 +554,8 @@ async def patch(repository_root: str) -> dict[str, object]:
 
 @router.get("/logs")
 async def logs() -> dict[str, object]:
-    return {"logs": _combined_logs(get_control_state())}
+    state = get_control_state()
+    return {"logs": _combined_logs(state, _latest_result(state))}
 
 
 @router.get("/events")
@@ -401,6 +567,217 @@ async def events() -> StreamingResponse:
             await asyncio.sleep(2)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.get("/workspaces/repositories")
+async def list_repositories(include_archived: bool = False) -> dict[str, object]:
+    manager = get_control_state().workspace_manager
+    active = manager.active_repository()
+    return {
+        "repositories": [
+            record.to_dict()
+            for record in manager.list_repositories(include_archived=include_archived)
+        ],
+        "active_repository": active.to_dict() if active else None,
+    }
+
+
+@router.post("/workspaces/import")
+async def import_repository(request: ImportRepositoryRequest) -> dict[str, object]:
+    try:
+        record = get_control_state().workspace_manager.import_local_repository(
+            request.path,
+            repository_name=request.repository_name,
+            set_active=request.set_active,
+        )
+        return record.to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/workspaces/clone")
+async def clone_repository(request: CloneRepositoryRequest) -> dict[str, object]:
+    try:
+        record = get_control_state().workspace_manager.clone_repository(
+            request.source,
+            repository_name=request.repository_name,
+            set_active=request.set_active,
+        )
+        return record.to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/workspaces/repositories/{repository_id}/switch")
+async def switch_repository(repository_id: str) -> dict[str, object]:
+    try:
+        return get_control_state().workspace_manager.switch_active_repository(repository_id).to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/workspaces/repositories/{repository_id}/archive")
+async def archive_repository(repository_id: str) -> dict[str, object]:
+    try:
+        return get_control_state().workspace_manager.archive_repository(repository_id).to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/workspaces/repositories/{repository_id}")
+async def delete_repository_metadata(repository_id: str) -> dict[str, str]:
+    get_control_state().workspace_manager.delete_repository_metadata(repository_id)
+    return {"status": "deleted", "repository_id": repository_id}
+
+
+@router.post("/workspaces/repositories/{repository_id}/refresh")
+async def refresh_repository(repository_id: str, force: bool = False) -> dict[str, object]:
+    try:
+        record = await get_control_state().workspace_manager.refresh_intelligence(
+            repository_id,
+            force=force,
+        )
+        return record.to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/git/status")
+async def git_status(
+    repository_root: str | None = None,
+    repository_id: str | None = None,
+) -> dict[str, object]:
+    return _git_manager(repository_root=repository_root, repository_id=repository_id).status().to_dict()
+
+
+@router.get("/git/branches")
+async def git_branches(
+    repository_root: str | None = None,
+    repository_id: str | None = None,
+) -> dict[str, object]:
+    manager = _git_manager(repository_root=repository_root, repository_id=repository_id)
+    return {"current": manager.current_branch(), "branches": manager.branches()}
+
+
+@router.post("/git/branches")
+async def create_branch(request: BranchRequest) -> dict[str, object]:
+    try:
+        manager = _git_manager(repository_root=request.repository_root, repository_id=request.repository_id)
+        branch = manager.create_branch(request.branch)
+        return {"branch": branch, "status": manager.status().to_dict()}
+    except GitManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/git/history")
+async def git_history(
+    repository_root: str | None = None,
+    repository_id: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, object]:
+    manager = _git_manager(repository_root=repository_root, repository_id=repository_id)
+    return {"commits": [commit.to_dict() for commit in manager.history(limit=limit)]}
+
+
+@router.post("/git/commit")
+async def git_commit(request: CommitRequest) -> dict[str, object]:
+    try:
+        manager = _git_manager(repository_root=request.repository_root, repository_id=request.repository_id)
+        sha = manager.commit_all(request.message)
+        return {"commit_sha": sha, "status": manager.status().to_dict()}
+    except GitManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/git/rollback")
+async def git_rollback(request: RollbackRequest) -> dict[str, object]:
+    try:
+        manager = _git_manager(repository_root=request.repository_root, repository_id=request.repository_id)
+        manager.rollback(request.target, clean_untracked=request.clean_untracked)
+        return {"status": manager.status().to_dict()}
+    except GitManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/git/revert")
+async def git_revert(request: RevertRequest) -> dict[str, object]:
+    try:
+        manager = _git_manager(repository_root=request.repository_root, repository_id=request.repository_id)
+        sha = manager.revert(request.commit_sha, no_commit=request.no_commit)
+        return {"commit_sha": sha, "status": manager.status().to_dict()}
+    except GitManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/history/runs")
+async def history_runs(repository_id: str | None = None) -> dict[str, object]:
+    records = get_control_state().run_history.list_runs(repository_id=repository_id)
+    return {"runs": [record.to_dict() for record in records]}
+
+
+@router.get("/history/runs/{run_id}")
+async def history_run(run_id: str) -> dict[str, object]:
+    try:
+        return get_control_state().run_history.get(run_id).to_dict()
+    except RunHistoryError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/history/runs/{run_id}/replay")
+async def history_replay(run_id: str) -> dict[str, object]:
+    try:
+        return {"run_id": run_id, "events": get_control_state().run_history.replay(run_id)}
+    except RunHistoryError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/memory/architecture")
+async def architecture_memory(repository_root: str | None = None) -> dict[str, object]:
+    if repository_root:
+        return {"memory": _architecture_memory_snapshot(repository_root)}
+    return {"repositories": [record.to_dict() for record in ArchitectureMemory().list_records()]}
+
+
+@router.get("/memory/objectives")
+async def objective_memory(repository_root: str | None = None) -> dict[str, object]:
+    return {
+        "objectives": [
+            record.to_dict()
+            for record in ObjectiveMemory().list_records(repository_path=repository_root)
+        ]
+    }
+
+
+@router.post("/benchmarks/run")
+async def run_benchmarks(request: BenchmarkRequest) -> dict[str, object]:
+    cases = [
+        BenchmarkCase(
+            name=str(item.get("name", f"case-{index}")),
+            objective=str(item.get("objective", "")),
+            expected_files=[str(path) for path in item.get("expected_files", [])]
+            if isinstance(item.get("expected_files"), list)
+            else [],
+        )
+        for index, item in enumerate(request.cases, start=1)
+        if str(item.get("objective", "")).strip()
+    ]
+    results = BenchmarkSuite(root=request.root).run(
+        cases=cases or None,
+        cleanup=request.cleanup,
+    )
+    total = len(results)
+    successes = sum(1 for result in results if result.success)
+    return {
+        "results": [result.to_dict() for result in results],
+        "summary": {
+            "total": total,
+            "successes": successes,
+            "success_rate": successes / total if total else 0.0,
+            "completion_rate": sum(result.completion_rate for result in results) / total if total else 0.0,
+            "convergence_rate": sum(result.convergence_rate for result in results) / total if total else 0.0,
+            "repair_rate": sum(result.repair_rate for result in results) / total if total else 0.0,
+        },
+    }
 
 
 def _load_artifacts(artifact_dir: str) -> list[ArtifactSummary]:
@@ -484,9 +861,44 @@ def _patch_snapshot(repo_root: str) -> dict[str, object]:
         }
 
 
+def _git_snapshot(repo_root: str) -> dict[str, object]:
+    try:
+        manager = GitManager(repo_root)
+        return {
+            "status": manager.status().to_dict(),
+            "branches": manager.branches(),
+            "history": [commit.to_dict() for commit in manager.history(limit=10)],
+            "changed_files": manager.diff_name_status(),
+        }
+    except GitManagerError as exc:
+        return {"error": str(exc), "status": None, "branches": [], "history": [], "changed_files": []}
+
+
+def _architecture_memory_snapshot(repo_root: str) -> dict[str, object] | None:
+    record = ArchitectureMemory().get(repo_root)
+    return record.to_dict() if record else None
+
+
 def _tests_snapshot(result: dict | None) -> dict[str, object]:
     if not result:
         return {"status": "idle", "passing": 0, "failing": 0, "retries": 0, "repair_attempts": 0}
+    repair = result.get("repair_convergence")
+    if isinstance(repair, dict):
+        state = repair.get("state") if isinstance(repair.get("state"), dict) else {}
+        execution = repair.get("final_execution") if isinstance(repair.get("final_execution"), dict) else {}
+        passed = bool(execution.get("passed"))
+        return {
+            "status": "passed" if passed else "failed",
+            "passing": 1 if passed else 0,
+            "failing": 0 if passed else 1,
+            "retries": state.get("iteration_count", 0),
+            "repair_attempts": state.get("repair_count", 0),
+            "stdout": execution.get("stdout", ""),
+            "stderr": execution.get("stderr", ""),
+            "pass_rate": state.get("test_pass_rate", 0.0),
+            "last_failure_type": state.get("last_failure_type"),
+            "last_failing_test": state.get("last_failing_test"),
+        }
     passed = bool(result.get("tests_passed"))
     return {
         "status": "passed" if passed else "failed",
@@ -496,6 +908,55 @@ def _tests_snapshot(result: dict | None) -> dict[str, object]:
         "repair_attempts": max(int(result.get("iterations_run", 1)) - 1, 0),
         "stdout": result.get("stdout", ""),
         "stderr": result.get("stderr", ""),
+    }
+
+
+def _convergence_snapshot(result: dict | None) -> dict[str, object]:
+    if not result:
+        return {
+            "status": "idle",
+            "current_phase": "idle",
+            "current_repair_attempt": 0,
+            "repair_limit": 0,
+            "success": False,
+            "stop_reason": None,
+            "failure_category": None,
+            "last_failing_test": None,
+            "test_pass_rate": 0.0,
+            "timeline": [],
+            "history": [],
+        }
+
+    repair = result.get("repair_convergence")
+    if not isinstance(repair, dict):
+        return {
+            "status": "unknown",
+            "current_phase": "legacy",
+            "current_repair_attempt": result.get("repair_attempts", 0),
+            "repair_limit": 0,
+            "success": bool(result.get("tests_passed")),
+            "stop_reason": result.get("stop_reason"),
+            "failure_category": result.get("failure_type"),
+            "last_failing_test": None,
+            "test_pass_rate": 1.0 if result.get("tests_passed") else 0.0,
+            "timeline": [],
+            "history": [],
+        }
+
+    state = repair.get("state") if isinstance(repair.get("state"), dict) else {}
+    history = state.get("history") if isinstance(state.get("history"), list) else []
+    return {
+        "status": state.get("status", "unknown"),
+        "current_phase": state.get("current_phase", "unknown"),
+        "current_repair_attempt": state.get("repair_count", 0),
+        "repair_limit": state.get("repair_limit", 0),
+        "success": bool(state.get("success")),
+        "stop_reason": state.get("stop_reason"),
+        "failure_category": state.get("last_failure_type"),
+        "last_failing_test": state.get("last_failing_test"),
+        "test_pass_rate": state.get("test_pass_rate", 0.0),
+        "timeline": history,
+        "history": history,
     }
 
 
@@ -511,8 +972,14 @@ def _conversation_summaries(artifacts: list[ArtifactSummary]) -> list[dict[str, 
     ]
 
 
-def _combined_logs(state: ControlCenterState) -> list[str]:
+def _combined_logs(state: ControlCenterState, latest_result: dict | None = None) -> list[str]:
     lines = state.logs()
+    latest_result = latest_result if latest_result is not None else _latest_result(state)
+    if latest_result:
+        repair = latest_result.get("repair_convergence")
+        telemetry = repair.get("telemetry") if isinstance(repair, dict) else None
+        if isinstance(telemetry, list):
+            lines.extend(str(line) for line in telemetry)
     log_dir = Path("runtime_logs")
     if log_dir.exists():
         for path in sorted(log_dir.glob("*.log")):
@@ -529,6 +996,52 @@ def _latest_result(state: ControlCenterState) -> dict | None:
         if record.result:
             return record.result
     return None
+
+
+def _result_section(result: dict | None, key: str) -> dict[str, object] | None:
+    value = result.get(key) if isinstance(result, dict) else None
+    return value if isinstance(value, dict) else None
+
+
+def _telemetry_from_result(result: dict | None) -> list[str]:
+    if not result:
+        return []
+    repair = result.get("repair_convergence")
+    telemetry = repair.get("telemetry") if isinstance(repair, dict) else None
+    return [str(line) for line in telemetry] if isinstance(telemetry, list) else []
+
+
+def _git_manager(
+    *,
+    repository_root: str | None = None,
+    repository_id: str | None = None,
+) -> GitManager:
+    if repository_id:
+        try:
+            repository = get_control_state().workspace_manager.get_repository(repository_id)
+            return GitManager(repository.repository_path)
+        except (WorkspaceManagerError, GitManagerError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if repository_root:
+        try:
+            return GitManager(repository_root)
+        except GitManagerError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    active = get_control_state().workspace_manager.active_repository()
+    if active:
+        try:
+            return GitManager(active.repository_path)
+        except GitManagerError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=400, detail="repository_root or repository_id is required")
+
+
+async def _repository_preparation(repo_root: str, objective: str) -> dict[str, object] | None:
+    try:
+        engine = RepositoryExecutionEngine(repo_root=repo_root)
+        return (await engine.prepare(objective)).to_dict()
+    except (RepositoryExecutionError, OSError, ValueError):
+        return None
 
 
 def _safe_root(root: str) -> Path:

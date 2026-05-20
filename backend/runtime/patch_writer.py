@@ -50,6 +50,12 @@ class PatchWriter:
             raise PatchWriterError(
                 f"Refusing to write blank content to '{file_path}'."
             )
+        if not self._valid_relative_path(file_path):
+            return PatchResult(
+                file_path=file_path,
+                success=False,
+                error=f"Unsafe or invalid repository path: '{file_path}'.",
+            )
 
         try:
             if self.backup and self.workspace.exists(file_path):
@@ -98,3 +104,13 @@ class PatchWriter:
     def failed_results(self) -> list[PatchResult]:
         """Filter helper — not stateful, use with result list from apply_many."""
         return []
+
+    @staticmethod
+    def _valid_relative_path(file_path: str) -> bool:
+        path = Path(file_path)
+        return (
+            bool(file_path.strip())
+            and not path.is_absolute()
+            and ".." not in path.parts
+            and "." not in path.parts
+        )

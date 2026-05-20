@@ -28,11 +28,13 @@ logs/
 # Runtime
 runtime_data/
 worktrees/
+.forge/
 
 # Frontend
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/tsconfig.tsbuildinfo
 
 # Qdrant
 qdrant_storage/

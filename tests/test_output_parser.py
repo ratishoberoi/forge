@@ -101,6 +101,22 @@ def test_parse_patch_output_with_preamble():
     assert parsed.risk == "low"
 
 
+def test_parse_primary_output_accepts_control_center_schema():
+    parser = OutputParser()
+    text = """
+    {
+      "summary": "Build calculator",
+      "files": {
+        "calculator.py": "def add(a, b): return a + b"
+      }
+    }
+    """
+    parsed = parser.parse_primary_output(text)
+    assert parsed.summary == "Build calculator"
+    assert parsed.risk == "unknown"
+    assert parsed.files["calculator.py"].startswith("def add")
+
+
 # ── safe_parse_patch_output ─────────────────────────────────────────────────
 
 def test_safe_parse_returns_none_on_failure():

@@ -50,6 +50,7 @@ class PatchParser:
             for path, content in structured.files.items():
                 if path.lstrip("./") == normalized:
                     return content.strip()
+            return ""
         return self.extract_code(text)
 
     def extract_all_blocks(self, text: str) -> list[str]:

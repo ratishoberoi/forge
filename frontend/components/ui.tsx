@@ -8,7 +8,7 @@ export function Card({
   return (
     <section
       className={cn(
-        "rounded-lg border border-border bg-panel shadow-sm",
+        "rounded-md border border-border bg-panel shadow-lg shadow-black/15",
         className
       )}
     >
@@ -49,9 +49,9 @@ export function Button({
       className={cn(
         "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
         variant === "primary" && "bg-accent text-white hover:brightness-95",
-        variant === "secondary" && "border border-border bg-white hover:bg-slate-50",
+        variant === "secondary" && "border border-border bg-slate-900 hover:bg-slate-800",
         variant === "danger" && "bg-danger text-white hover:brightness-95",
-        variant === "ghost" && "hover:bg-slate-100",
+        variant === "ghost" && "hover:bg-slate-800",
         className
       )}
       {...props}
@@ -64,7 +64,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={cn(
-        "h-9 w-full rounded-md border border-border bg-white px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
+        "h-9 w-full rounded-md border border-border bg-slate-950 px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
         props.className
       )}
     />
@@ -76,7 +76,7 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
     <textarea
       {...props}
       className={cn(
-        "min-h-24 w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
+        "min-h-24 w-full resize-y rounded-md border border-border bg-slate-950 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
         props.className
       )}
     />
@@ -94,11 +94,11 @@ export function Badge({
     <span
       className={cn(
         "inline-flex items-center rounded-md px-2 py-1 text-xs font-medium",
-        tone === "neutral" && "bg-slate-100 text-slate-700",
-        tone === "success" && "bg-emerald-50 text-success",
-        tone === "warning" && "bg-amber-50 text-warning",
-        tone === "danger" && "bg-red-50 text-danger",
-        tone === "accent" && "bg-cyan-50 text-accent"
+        tone === "neutral" && "bg-slate-800 text-slate-200",
+        tone === "success" && "bg-emerald-950 text-success",
+        tone === "warning" && "bg-amber-950 text-warning",
+        tone === "danger" && "bg-red-950 text-danger",
+        tone === "accent" && "bg-cyan-950 text-accent"
       )}
     >
       {children}

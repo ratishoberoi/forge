@@ -42,19 +42,23 @@ class AutonomousPatchGenerator:
 
         try:
             parsed = self.parser.parse_patch_output(response.content)
-        except ValueError:
+        except ValueError as parse_error:
             if not response.content.lstrip().startswith("diff --git"):
-                raise
-            return self.validator.validate(
-                StructuredPatch(
-                    title=task,
-                    description=None,
-                    unified_diff=response.content,
-                    impacted_files=[PatchTarget(path=path) for path in impacted_files],
-                    risk=PatchRisk.UNKNOWN,
-                    metadata=self._metadata(response, agent_id),
+                try:
+                    parsed = self.parser.parse_primary_output(response.content)
+                except ValueError:
+                    raise parse_error
+            else:
+                return self.validator.validate(
+                    StructuredPatch(
+                        title=task,
+                        description=None,
+                        unified_diff=response.content,
+                        impacted_files=[PatchTarget(path=path) for path in impacted_files],
+                        risk=PatchRisk.UNKNOWN,
+                        metadata=self._metadata(response, agent_id),
+                    )
                 )
-            )
 
         patch = StructuredPatch(
             title=parsed.summary,

@@ -6,6 +6,7 @@ from backend.runtime.local_inference import LocalInference
 from backend.runtime.runtime_health import RuntimeHealth
 from backend.runtime.runtime_process import RuntimeProcess
 from backend.runtime.runtime_swap_engine import RuntimeSwapEngine
+from backend.runtime.structured_outputs import validate_role_output
 
 
 class AutonomousCourtroomError(Exception):
@@ -285,12 +286,13 @@ class AutonomousCourtroom:
         Call inference on currently active runtime, build artifact, persist.
         Uses explicit model_name — no more role-to-name mapping needed.
         """
-        content = self.inference.infer(
+        raw_content = self.inference.infer(
             port=self.port,
             model=model_name,
             prompt=prompt,
             system_prompt=self._system_prompt_for_role(role),
         )
+        content = validate_role_output(role, raw_content)
         self._emit(f"[INFER] {role} response received")
 
         artifact = CognitionArtifact(
@@ -300,7 +302,7 @@ class AutonomousCourtroom:
             task=objective,
             content=content,
             created_at=datetime.now(timezone.utc),
-            metadata=metadata or {},
+            metadata={**(metadata or {}), "schema_valid": True},
         )
 
         self.exchange.persist(artifact)
@@ -317,33 +319,34 @@ class AutonomousCourtroom:
         return (
             "Generate the implementation for this objective:\n"
             f"{objective}\n\n"
-            "Return ONLY valid JSON with this schema:\n"
-            '{ "summary": str, "reasoning": str, "risk": str, '
-            '"files": { "relative/path.py": "full file content" } }'
+            "Return ONLY a JSON object with no markdown and no prose:\n"
+            '{ "summary": "short summary", '
+            '"files": { "relative/path.py": "complete file content" } }'
         )
 
     @staticmethod
     def _system_prompt_for_role(role: str) -> str:
         common = (
-            "Return concise, valid JSON only. Do not use markdown fences. "
-            "Do not include prose outside the JSON object."
+            "Return exactly one valid JSON object. Do not include markdown, "
+            "backticks, comments, analysis, or prose outside JSON."
         )
         if role == AutonomousCourtroom.CODER_ROLE:
             return (
                 common
-                + " The files object must map repository-relative paths to "
-                "complete replacement file contents."
+                + ' Required schema: {"summary": string, '
+                '"files": {"relative/path": "complete file content"}}. '
+                "All file paths must be repository-relative."
             )
         if role == AutonomousCourtroom.SYNTH_ROLE:
             return (
                 common
-                + ' Use keys "summary", "risks", "required_changes", '
-                '"severity", and "verdict".'
+                + ' Required schema: {"critique": string, "risks": string[], '
+                '"recommended_changes": string[]}.'
             )
         return (
             common
-            + ' Use keys "summary", "accepted", "blocking_issues", '
-            '"confidence", and "verdict".'
+            + ' Required schema: {"verdict": string, "approved": boolean, '
+            '"required_changes": string[]}.'
         )
 
     @staticmethod

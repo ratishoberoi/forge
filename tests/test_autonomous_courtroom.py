@@ -1,4 +1,5 @@
 import pytest
+import json
 from backend.runtime.artifact_exchange import ArtifactExchange
 from backend.runtime.artifact_loader import ArtifactLoader
 from backend.runtime.artifact_store import ArtifactStore
@@ -47,7 +48,22 @@ class FakeInference:
         max_tokens: int = 300,
         system_prompt: str | None = None,
     ) -> str:
-        return f"fake-response:{model}"
+        if model == "qwen-primary":
+            return json.dumps({
+                "summary": "fake primary response",
+                "files": {"app.py": "print('hello')\n"},
+            })
+        if model == "deepseek-synth":
+            return json.dumps({
+                "critique": "fake synth response",
+                "risks": ["low coverage"],
+                "recommended_changes": ["add tests"],
+            })
+        return json.dumps({
+            "verdict": "fake judge response",
+            "approved": True,
+            "required_changes": [],
+        })
 
 
 class FakeHealth:
@@ -63,6 +79,17 @@ class FakeHealth:
 
     def is_ready(self, port: int) -> bool:
         return True
+
+
+class FlakyInference(FakeInference):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def infer(self, **kwargs) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return "thinking before malformed output"
+        return super().infer(**kwargs)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -167,9 +194,26 @@ def test_autonomous_courtroom_artifact_content(tmp_path):
     courtroom, _, _ = make_courtroom(tmp_path)
     artifacts = courtroom.execute(objective="Improve auth")
 
-    assert artifacts[0].content == "fake-response:qwen-primary"
-    assert artifacts[1].content == "fake-response:deepseek-synth"
-    assert artifacts[2].content == "fake-response:qwen-judge"
+    assert '"files"' in artifacts[0].content
+    assert '"critique"' in artifacts[1].content
+    assert '"approved": true' in artifacts[2].content
+    assert all(a.metadata["schema_valid"] is True for a in artifacts)
+
+
+def test_autonomous_courtroom_retries_malformed_output(tmp_path):
+    engine, _, _ = make_swap_engine()
+    inference = FlakyInference()
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=inference,
+    )
+    courtroom.health = FakeHealth()
+
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert len(artifacts) == 3
+    assert inference.calls == 4
 
 
 def test_autonomous_courtroom_synth_references_coder(tmp_path):
@@ -266,7 +310,7 @@ def test_retrieve_coder_artifact_after_execute(tmp_path):
     courtroom.execute(objective="Improve auth")
 
     coder = exchange.retrieve_round(role="PRIMARY_CODER", round_id=1)
-    assert coder.content == "fake-response:qwen-primary"
+    assert '"summary": "fake primary response"' in coder.content
 
 
 def test_retrieve_full_role_history_after_multi_round(tmp_path):

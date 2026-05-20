@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
+import time
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes.chat import router as chat_router
@@ -77,6 +79,24 @@ def create_app(*, start_runtime: bool = True) -> FastAPI:
     @app.get("/healthz")
     async def healthcheck() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.middleware("http")
+    async def log_control_center_requests(request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        if request.url.path.startswith("/api/control"):
+            duration_ms = (time.perf_counter() - started) * 1000
+            log_event(
+                logger,
+                logging.INFO,
+                "control.api.request",
+                "Control Center API request completed.",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=round(duration_ms, 2),
+            )
+        return response
 
     return app
 

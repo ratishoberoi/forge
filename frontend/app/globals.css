@@ -3,15 +3,15 @@
 @tailwind utilities;
 
 :root {
-  --background: 210 22% 96%;
-  --foreground: 220 22% 12%;
-  --border: 214 18% 82%;
-  --muted: 215 18% 42%;
-  --panel: 0 0% 100%;
-  --accent: 188 82% 36%;
-  --success: 150 64% 35%;
-  --warning: 36 92% 45%;
-  --danger: 0 72% 48%;
+  --background: 220 20% 8%;
+  --foreground: 210 22% 92%;
+  --border: 218 15% 22%;
+  --muted: 215 12% 62%;
+  --panel: 220 18% 12%;
+  --accent: 188 86% 42%;
+  --success: 150 66% 44%;
+  --warning: 38 94% 58%;
+  --danger: 0 74% 58%;
 }
 
 * {
@@ -27,6 +27,7 @@ body {
   margin: 0;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
+  font-feature-settings: "ss01", "ss02";
 }
 
 button,
@@ -38,4 +39,8 @@ textarea {
 
 pre {
   tab-size: 2;
+}
+
+::selection {
+  background: hsl(var(--accent) / 0.35);
 }

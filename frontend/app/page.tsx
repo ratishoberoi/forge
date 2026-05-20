@@ -11,6 +11,7 @@ import {
   FileCode2,
   GitBranch,
   GitCompare,
+  ListChecks,
   Pause,
   Play,
   RefreshCw,
@@ -23,11 +24,19 @@ import {
   ArtifactSummary,
   ControlSnapshot,
   RepoTreeNode,
+  commitRepository,
   controlRun,
   createRun,
+  fetchDashboardHealth,
   fetchRepoFile,
   fetchRepoTree,
-  fetchSnapshot
+  fetchRunReplay,
+  fetchSnapshot,
+  importRepository,
+  refreshRepository,
+  rollbackRepository,
+  runBenchmarks,
+  switchRepository
 } from "@/lib/api";
 import { Badge, Button, Card, CardHeader, Input, Textarea } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -41,12 +50,17 @@ export default function ControlCenterPage() {
   const [iterations, setIterations] = useState(3);
   const [testCommand, setTestCommand] = useState("pytest -q");
   const [execute, setExecute] = useState(false);
+  const [repositoryImportPath, setRepositoryImportPath] = useState(defaultRepo);
+  const [commitMessage, setCommitMessage] = useState("Forge autonomous changes");
   const [snapshot, setSnapshot] = useState<ControlSnapshot | null>(null);
   const [tree, setTree] = useState<RepoTreeNode | null>(null);
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string } | null>(null);
   const [artifactQuery, setArtifactQuery] = useState("");
   const [artifactRole, setArtifactRole] = useState("ALL");
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactSummary | null>(null);
+  const [replayEvents, setReplayEvents] = useState<Array<Record<string, unknown>>>([]);
+  const [benchmarkSummary, setBenchmarkSummary] = useState<Record<string, unknown> | null>(null);
+  const [health, setHealth] = useState<"checking" | "ok" | "failed">("checking");
   const [error, setError] = useState<string | null>(null);
   const activeRun = snapshot?.active_run ?? null;
 
@@ -70,6 +84,24 @@ export default function ControlCenterPage() {
       window.clearInterval(interval);
     };
   }, [repositoryRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHealth() {
+      try {
+        await fetchDashboardHealth();
+        if (!cancelled) setHealth("ok");
+      } catch {
+        if (!cancelled) setHealth("failed");
+      }
+    }
+    loadHealth();
+    const interval = window.setInterval(loadHealth, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +137,7 @@ export default function ControlCenterPage() {
     const run = await createRun({
       objective,
       repository_root: repositoryRoot,
+      repository_id: stringValue(snapshot?.active_repository?.repository_id) || null,
       target_file: targetFile,
       test_command: command.length ? command : ["pytest", "-q"],
       max_iterations: iterations,
@@ -124,15 +157,75 @@ export default function ControlCenterPage() {
     setSelectedFile({ path: file.path, content: file.content });
   }
 
+  async function importCurrentRepository() {
+    const record = await importRepository({ path: repositoryImportPath, set_active: true });
+    const nextRoot = stringValue(record.repository_path);
+    if (nextRoot) setRepositoryRoot(nextRoot);
+    setSnapshot(await fetchSnapshot(nextRoot || repositoryRoot));
+  }
+
+  async function selectRepository(repositoryId: string) {
+    const record = await switchRepository(repositoryId);
+    const nextRoot = stringValue(record.repository_path);
+    if (nextRoot) setRepositoryRoot(nextRoot);
+    setSnapshot(await fetchSnapshot(nextRoot || repositoryRoot));
+  }
+
+  async function refreshActiveRepository() {
+    const repositoryId = stringValue(snapshot?.active_repository?.repository_id);
+    if (!repositoryId) return;
+    await refreshRepository(repositoryId);
+    setSnapshot(await fetchSnapshot(repositoryRoot));
+  }
+
+  async function commitActiveRepository() {
+    const repositoryId = stringValue(snapshot?.active_repository?.repository_id);
+    await commitRepository({
+      repository_id: repositoryId || undefined,
+      repository_root: repositoryId ? undefined : repositoryRoot,
+      message: commitMessage
+    });
+    setSnapshot(await fetchSnapshot(repositoryRoot));
+  }
+
+  async function rollbackActiveRepository() {
+    const repositoryId = stringValue(snapshot?.active_repository?.repository_id);
+    await rollbackRepository({
+      repository_id: repositoryId || undefined,
+      repository_root: repositoryId ? undefined : repositoryRoot,
+      target: "HEAD",
+      clean_untracked: false
+    });
+    setSnapshot(await fetchSnapshot(repositoryRoot));
+  }
+
+  async function openReplay(runId: string) {
+    const replay = await fetchRunReplay(runId);
+    setReplayEvents(replay.events);
+  }
+
+  async function runIsolatedBenchmarks() {
+    const result = await runBenchmarks({ root: ".forge/benchmarks", cleanup: true });
+    setBenchmarkSummary(objectValue(result.summary));
+  }
+
   return (
-    <main className="min-h-screen px-5 py-5">
+    <main className="min-h-screen bg-background px-4 py-4">
       <div className="mx-auto flex max-w-[1800px] flex-col gap-5">
-        <header className="flex flex-wrap items-center justify-between gap-4">
-          <div>
+        <header className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-border bg-panel px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-cyan-950 text-accent">
+              <Terminal size={20} />
+            </div>
+            <div>
             <h1 className="text-2xl font-semibold tracking-normal">Forge Control Center</h1>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
               <Badge tone={activeRun ? "accent" : "neutral"}>{activeRun?.status ?? "idle"}</Badge>
+              <Badge tone={health === "ok" ? "success" : health === "failed" ? "danger" : "warning"}>
+                backend {health}
+              </Badge>
               <span>{snapshot?.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "waiting"}</span>
+            </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -149,8 +242,17 @@ export default function ControlCenterPage() {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[420px_1fr_420px]">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[390px_minmax(620px,1fr)_430px]">
           <section className="flex flex-col gap-5">
+            <WorkspaceBrowser
+              repositories={snapshot?.repositories ?? []}
+              activeRepository={snapshot?.active_repository}
+              importPath={repositoryImportPath}
+              setImportPath={setRepositoryImportPath}
+              onImport={importCurrentRepository}
+              onSelect={selectRepository}
+              onRefresh={refreshActiveRepository}
+            />
             <CommandCenter
               objective={objective}
               setObjective={setObjective}
@@ -170,13 +272,38 @@ export default function ControlCenterPage() {
               onResume={() => runAction("resume")}
               onStop={() => runAction("stop")}
             />
+            <RepositorySummary
+              summary={snapshot?.repository_summary}
+              architecture={snapshot?.architecture_summary}
+              plan={snapshot?.execution_plan}
+            />
+            <ArchitectureMemoryPanel memory={snapshot?.architecture_memory} compressed={snapshot?.compressed_context} />
+            <ConvergencePanel convergence={snapshot?.convergence} />
             <RuntimeMonitor runtime={snapshot?.runtime} />
             <TestResults tests={snapshot?.tests} />
+            <ProductionValidationPanel
+              bootstrap={snapshot?.bootstrap}
+              acceptance={snapshot?.acceptance}
+              build={snapshot?.build_validation}
+              visual={snapshot?.visual_validation}
+              quality={snapshot?.quality_score}
+              releaseReport={snapshot?.release_report}
+              benchmarkSummary={benchmarkSummary}
+              onBenchmark={runIsolatedBenchmarks}
+            />
           </section>
 
           <section className="flex flex-col gap-5">
             <LiveCourtroom roles={snapshot?.courtroom ?? []} />
             <ExecutionTimeline timeline={snapshot?.timeline ?? []} />
+            <TaskGraphPanel taskPlan={snapshot?.task_plan} executionGraph={snapshot?.execution_graph} />
+            <GitPanel
+              git={snapshot?.git}
+              commitMessage={commitMessage}
+              setCommitMessage={setCommitMessage}
+              onCommit={commitActiveRepository}
+              onRollback={rollbackActiveRepository}
+            />
             <PatchViewer patch={snapshot?.patch} />
             <LogsPanel logs={snapshot?.logs ?? []} />
           </section>
@@ -191,12 +318,315 @@ export default function ControlCenterPage() {
               selected={selectedArtifact}
               setSelected={setSelectedArtifact}
             />
+            <RunHistoryPanel
+              runs={snapshot?.run_history ?? []}
+              queued={snapshot?.queued_tasks ?? []}
+              replayEvents={replayEvents}
+              onReplay={openReplay}
+            />
+            <ObjectiveMemoryPanel objectives={snapshot?.objective_memory ?? []} />
             <RepositoryExplorer tree={tree} selectedFile={selectedFile} onOpenFile={openFile} />
             <ConversationView items={snapshot?.conversation ?? []} />
           </section>
         </div>
       </div>
     </main>
+  );
+}
+
+function WorkspaceBrowser(props: {
+  repositories: Array<Record<string, unknown>>;
+  activeRepository?: Record<string, unknown> | null;
+  importPath: string;
+  setImportPath: (value: string) => void;
+  onImport: () => void;
+  onSelect: (repositoryId: string) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader title="Workspace Browser" action={<GitBranch size={18} className="text-accent" />}>
+        {stringValue(props.activeRepository?.repository_name) || "no repository selected"}
+      </CardHeader>
+      <div className="space-y-3 p-4">
+        <div className="grid grid-cols-[1fr_auto] gap-2">
+          <Input value={props.importPath} onChange={(event) => props.setImportPath(event.target.value)} />
+          <Button variant="secondary" onClick={props.onImport}>
+            <Archive size={16} />
+            Import
+          </Button>
+        </div>
+        <div className="max-h-44 overflow-auto rounded-md border border-border bg-slate-950">
+          {props.repositories.length ? (
+            props.repositories.map((repository) => {
+              const repositoryId = stringValue(repository.repository_id);
+              const active = repositoryId === stringValue(props.activeRepository?.repository_id);
+              return (
+                <button
+                  key={repositoryId}
+                  className={cn(
+                    "block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900",
+                    active && "bg-cyan-950"
+                  )}
+                  onClick={() => repositoryId && props.onSelect(repositoryId)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">{stringValue(repository.repository_name)}</span>
+                    <Badge tone={active ? "accent" : "neutral"}>{stringValue(repository.repository_type)}</Badge>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted">{stringValue(repository.repository_path)}</div>
+                </button>
+              );
+            })
+          ) : (
+            <div className="px-3 py-2 text-sm text-muted">No repositories registered.</div>
+          )}
+        </div>
+        <Button variant="secondary" onClick={props.onRefresh} disabled={!props.activeRepository}>
+          <RefreshCw size={16} />
+          Refresh Intelligence
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+function RepositorySummary({
+  summary,
+  architecture,
+  plan
+}: {
+  summary?: Record<string, unknown> | null;
+  architecture?: string | null;
+  plan?: Record<string, unknown> | null;
+}) {
+  const filesToCreate = asList(plan?.files_to_create);
+  const filesToModify = asList(plan?.files_to_modify);
+  const expectedTests = asList(plan?.expected_tests);
+  return (
+    <Card>
+      <CardHeader title="Repository Intelligence" action={<ListChecks size={18} className="text-accent" />}>
+        {architecture ?? "scan pending"}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <dl className="space-y-2">
+          <Metric label="language" value={summary?.primary_language ?? "unknown"} />
+          <Metric label="frameworks" value={asList(summary?.frameworks).join(", ") || "none"} />
+          <Metric label="package manager" value={asList(summary?.package_managers).join(", ") || "none"} />
+          <Metric label="tests" value={asList(summary?.test_frameworks).join(", ") || "none"} />
+          <Metric label="entrypoints" value={asList(summary?.entrypoints).join(", ") || "none"} />
+        </dl>
+        <div className="grid gap-2">
+          <PlanList title="Files to create" items={filesToCreate} />
+          <PlanList title="Files to modify" items={filesToModify} />
+          <PlanList title="Expected tests" items={expectedTests} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function PlanList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-md border border-border bg-slate-950 p-2">
+      <div className="mb-1 text-xs font-medium text-muted">{title}</div>
+      {items.length ? (
+        <ul className="space-y-1">
+          {items.map((item) => (
+            <li key={item} className="truncate text-xs">{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-xs text-muted">none</div>
+      )}
+    </div>
+  );
+}
+
+function MiniList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-md border border-border bg-slate-950 p-2">
+      <div className="mb-1 text-xs font-medium text-muted">{title}</div>
+      {items.length ? (
+        <ul className="space-y-1">
+          {items.slice(0, 8).map((item, index) => (
+            <li key={`${title}-${index}`} className="truncate text-xs">{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-xs text-muted">none</div>
+      )}
+    </div>
+  );
+}
+
+function ArchitectureMemoryPanel({
+  memory,
+  compressed
+}: {
+  memory?: Record<string, unknown> | null;
+  compressed?: Record<string, unknown> | null;
+}) {
+  const modules = asList(memory?.important_modules);
+  const boundaries = asList(memory?.service_boundaries);
+  const modified = asList(memory?.previously_modified_files);
+  const selected = asList(compressed?.selected_files);
+  return (
+    <Card>
+      <CardHeader title="Architecture Memory" action={<Activity size={18} className="text-accent" />}>
+        {stringValue(memory?.updated_at) || "memory pending"}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <p className="text-muted">{stringValue(memory?.architecture_summary) || "No architecture memory yet."}</p>
+        <div className="grid gap-2">
+          <MiniList title="Important Modules" items={modules} />
+          <MiniList title="Service Boundaries" items={boundaries} />
+          <MiniList title="Previously Modified" items={modified} />
+          <MiniList title="Compressed Context Files" items={selected} />
+        </div>
+        <Metric label="context tokens" value={compressed?.token_estimate ?? 0} />
+      </div>
+    </Card>
+  );
+}
+
+function TaskGraphPanel({
+  taskPlan,
+  executionGraph
+}: {
+  taskPlan?: Record<string, unknown> | null;
+  executionGraph?: Record<string, unknown> | null;
+}) {
+  const tasks = Array.isArray(taskPlan?.tasks) ? (taskPlan.tasks as Array<Record<string, unknown>>) : [];
+  const steps = Array.isArray(executionGraph?.steps) ? (executionGraph.steps as Array<Record<string, unknown>>) : [];
+  const blocked = asList(executionGraph?.blocked);
+  const completed = asList(executionGraph?.completed);
+  return (
+    <Card>
+      <CardHeader title="Task Graph" action={<ListChecks size={18} className="text-accent" />}>
+        {tasks.length ? `${tasks.length} tasks` : "plan pending"}
+      </CardHeader>
+      <div className="space-y-3 p-4">
+        <div className="grid gap-2">
+          {tasks.slice(0, 6).map((task) => (
+            <div key={stringValue(task.task_id)} className="rounded-md border border-border bg-slate-950 p-3 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{stringValue(task.task_id)}</span>
+                <Badge tone="neutral">{stringValue(task.status) || "pending"}</Badge>
+              </div>
+              <div className="mt-1 text-muted">{stringValue(task.goal)}</div>
+              <div className="mt-2 truncate text-xs text-muted">{asList(task.affected_files).join(", ")}</div>
+            </div>
+          ))}
+        </div>
+        <div className="grid gap-2 md:grid-cols-3">
+          <MiniList title="Execution Steps" items={steps.map((step) => `${step.kind ?? ""} ${step.step_id ?? ""}`)} />
+          <MiniList title="Completed" items={completed} />
+          <MiniList title="Blocked" items={blocked} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ProductionValidationPanel({
+  bootstrap,
+  acceptance,
+  build,
+  visual,
+  quality,
+  releaseReport,
+  benchmarkSummary,
+  onBenchmark
+}: {
+  bootstrap?: Record<string, unknown> | null;
+  acceptance?: Record<string, unknown> | null;
+  build?: Record<string, unknown> | null;
+  visual?: Record<string, unknown> | null;
+  quality?: Record<string, unknown> | null;
+  releaseReport?: Record<string, unknown> | null;
+  benchmarkSummary?: Record<string, unknown> | null;
+  onBenchmark: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader title="Production Readiness" action={<CheckCircle2 size={18} className="text-accent" />}>
+        score {String(quality?.overall ?? "pending")}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <dl className="space-y-2">
+          <Metric label="bootstrap" value={bootstrap?.applied ? "applied" : bootstrap?.reason ?? "pending"} />
+          <Metric label="acceptance" value={acceptance?.passed === undefined ? "pending" : acceptance.passed ? "passed" : "failed"} />
+          <Metric label="build" value={build?.passed === undefined ? "pending" : build.passed ? "passed" : "failed"} />
+          <Metric label="visual" value={visual?.passed === undefined ? "pending" : visual.passed ? "passed" : "failed"} />
+          <Metric label="report" value={releaseReport?.created_at ?? "pending"} />
+        </dl>
+        <div className="grid gap-2 md:grid-cols-2">
+          <MiniList title="Acceptance Errors" items={asList(acceptance?.errors)} />
+          <MiniList title="Build Errors" items={asList(build?.errors)} />
+        </div>
+        <Button variant="secondary" onClick={onBenchmark}>
+          <Activity size={16} />
+          Run Isolated Benchmarks
+        </Button>
+        {benchmarkSummary ? (
+          <div className="rounded-md border border-border bg-slate-950 p-2 text-xs">
+            success {String(benchmarkSummary.success_rate ?? 0)} / completion {String(benchmarkSummary.completion_rate ?? 0)}
+          </div>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+function ConvergencePanel({ convergence }: { convergence?: Record<string, unknown> }) {
+  const history = Array.isArray(convergence?.history)
+    ? (convergence.history as Array<Record<string, unknown>>)
+    : [];
+  const passRate = Number(convergence?.test_pass_rate ?? 0);
+  const status = String(convergence?.status ?? "idle");
+  return (
+    <Card>
+      <CardHeader title="Convergence" action={<ListChecks size={18} className="text-accent" />}>
+        {String(convergence?.stop_reason ?? "waiting")}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <dl className="space-y-2">
+          <Metric label="phase" value={convergence?.current_phase ?? "idle"} />
+          <Metric label="status" value={status} />
+          <Metric
+            label="repair attempt"
+            value={`${convergence?.current_repair_attempt ?? 0} / ${convergence?.repair_limit ?? 0}`}
+          />
+          <Metric label="failure" value={convergence?.failure_category ?? "none"} />
+          <Metric label="last failing test" value={convergence?.last_failing_test ?? "none"} />
+          <Metric label="pass rate" value={`${Math.round(passRate * 100)}%`} />
+        </dl>
+        <div className="h-2 rounded bg-slate-950">
+          <div
+            className={cn("h-2 rounded", status === "converged" ? "bg-emerald-500" : "bg-cyan-500")}
+            style={{ width: `${Math.max(0, Math.min(100, passRate * 100))}%` }}
+          />
+        </div>
+        <div className="max-h-40 overflow-auto rounded-md border border-border bg-slate-950">
+          {history.length ? (
+            history.slice(-6).map((entry, index) => (
+              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{String(entry.phase)}</span>
+                  <span className="text-muted">attempt {String(entry.attempt)}</span>
+                </div>
+                <div className="mt-1 truncate text-muted">
+                  {String(entry.failure_category ?? entry.message ?? "ok")}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-muted">No repair attempts yet.</div>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -247,7 +677,7 @@ function CommandCenter(props: {
         </div>
         <label className="block text-xs font-medium text-muted">Test Command</label>
         <Input value={props.testCommand} onChange={(event) => props.setTestCommand(event.target.value)} />
-        <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+            <div className="flex items-center justify-between rounded-md border border-border bg-slate-950 px-3 py-2">
           <span className="text-sm">Execute autonomous run</span>
           <input
             type="checkbox"
@@ -285,7 +715,7 @@ function LiveCourtroom({ roles }: { roles: Array<Record<string, unknown>> }) {
       <CardHeader title="Live Courtroom" action={<Bot size={18} className="text-accent" />} />
       <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3">
         {roles.map((role) => (
-          <div key={String(role.role)} className="rounded-md border border-border p-3">
+            <div key={String(role.role)} className="rounded-md border border-border bg-slate-950 p-3">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">{String(role.role)}</h3>
               <Badge tone={role.status === "active" ? "accent" : "neutral"}>{String(role.status)}</Badge>
@@ -326,6 +756,52 @@ function ExecutionTimeline({ timeline }: { timeline: Array<{ name: string; statu
   );
 }
 
+function GitPanel(props: {
+  git?: Record<string, unknown> | null;
+  commitMessage: string;
+  setCommitMessage: (value: string) => void;
+  onCommit: () => void;
+  onRollback: () => void;
+}) {
+  const status = objectValue(props.git?.status);
+  const changedFiles = Array.isArray(props.git?.changed_files)
+    ? (props.git.changed_files as Array<Record<string, unknown>>)
+    : [];
+  const history = Array.isArray(props.git?.history)
+    ? (props.git.history as Array<Record<string, unknown>>)
+    : [];
+  return (
+    <Card>
+      <CardHeader title="Git Safety" action={<GitBranch size={18} className="text-accent" />}>
+        {stringValue(status.branch) || "not a git repository"}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <dl className="space-y-2">
+          <Metric label="branch" value={status.branch ?? "unknown"} />
+          <Metric label="dirty" value={status.is_dirty ? "yes" : "no"} />
+          <Metric label="modified" value={asList(status.modified_files).length} />
+          <Metric label="untracked" value={asList(status.untracked_files).length} />
+        </dl>
+        <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+          <Input value={props.commitMessage} onChange={(event) => props.setCommitMessage(event.target.value)} />
+          <Button variant="secondary" onClick={props.onCommit}>
+            <CheckCircle2 size={16} />
+            Commit
+          </Button>
+          <Button variant="danger" onClick={props.onRollback}>
+            <XCircle size={16} />
+            Rollback
+          </Button>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <MiniList title="Changed Files" items={changedFiles.map((file) => `${file.status ?? "M"} ${file.path ?? ""}`)} />
+          <MiniList title="Commit History" items={history.map((commit) => `${String(commit.sha).slice(0, 7)} ${commit.subject ?? ""}`)} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function ArtifactExplorer(props: {
   artifacts: ArtifactSummary[];
   query: string;
@@ -347,7 +823,7 @@ function ArtifactExplorer(props: {
           <select
             value={props.role}
             onChange={(event) => props.setRole(event.target.value)}
-            className="h-9 rounded-md border border-border bg-white px-2 text-sm"
+            className="h-9 rounded-md border border-border bg-slate-950 px-2 text-sm"
           >
             <option>ALL</option>
             <option>PRIMARY_CODER</option>
@@ -361,8 +837,8 @@ function ArtifactExplorer(props: {
               key={artifact.artifact_id}
               onClick={() => props.setSelected(artifact)}
               className={cn(
-                "block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-50",
-                props.selected?.artifact_id === artifact.artifact_id && "bg-cyan-50"
+                "block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900",
+                props.selected?.artifact_id === artifact.artifact_id && "bg-cyan-950"
               )}
             >
               <div className="flex items-center justify-between gap-2">
@@ -376,6 +852,92 @@ function ArtifactExplorer(props: {
         <pre className="max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100">
           {props.selected?.content ?? "No artifact selected."}
         </pre>
+      </div>
+    </Card>
+  );
+}
+
+function RunHistoryPanel(props: {
+  runs: Array<Record<string, unknown>>;
+  queued: Array<Record<string, unknown>>;
+  replayEvents: Array<Record<string, unknown>>;
+  onReplay: (runId: string) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader title="Run History" action={<Clock size={18} className="text-accent" />}>
+        {props.queued.length ? `${props.queued.length} queued` : "queue empty"}
+      </CardHeader>
+      <div className="space-y-3 p-4">
+        <div className="rounded-md border border-border bg-slate-950">
+          {props.runs.length ? (
+            props.runs.slice(0, 8).map((run) => {
+              const runId = stringValue(run.run_id);
+              return (
+                <button
+                  key={runId}
+                  className="block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900"
+                  onClick={() => runId && props.onReplay(runId)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">{stringValue(run.objective)}</span>
+                    <Badge tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "neutral"}>
+                      {stringValue(run.status)}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted">{stringValue(run.branch) || stringValue(run.repository_path)}</div>
+                </button>
+              );
+            })
+          ) : (
+            <div className="px-3 py-2 text-sm text-muted">No persisted runs yet.</div>
+          )}
+        </div>
+        <MiniList
+          title="Queued Tasks"
+          items={props.queued.map((task) => `${task.id ?? ""} ${task.objective ?? ""}`)}
+        />
+        <div className="max-h-48 overflow-auto rounded-md border border-border bg-slate-950">
+          {props.replayEvents.length ? (
+            props.replayEvents.map((event, index) => (
+              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
+                <div className="font-medium">{stringValue(event.stage)}</div>
+                <div className="mt-1 truncate text-muted">{stringValue(event.message)}</div>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-muted">Select a run to replay stored telemetry.</div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ObjectiveMemoryPanel({ objectives }: { objectives: Array<Record<string, unknown>> }) {
+  return (
+    <Card>
+      <CardHeader title="Run Knowledge Base" action={<Archive size={18} className="text-accent" />}>
+        {objectives.length ? `${objectives.length} objectives` : "empty"}
+      </CardHeader>
+      <div className="max-h-72 overflow-auto p-4">
+        {objectives.length ? (
+          objectives.slice(0, 8).map((objective, index) => (
+            <div key={index} className="mb-2 rounded-md border border-border bg-slate-950 p-3 text-sm last:mb-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-medium">{stringValue(objective.objective)}</span>
+                <Badge tone={objective.outcome === "passed" ? "success" : objective.outcome === "failed" ? "danger" : "neutral"}>
+                  {stringValue(objective.outcome)}
+                </Badge>
+              </div>
+              <div className="mt-1 truncate text-xs text-muted">
+                failures: {asList(objective.failures).join(", ") || "none"}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="text-sm text-muted">No objective memory recorded yet.</div>
+        )}
       </div>
     </Card>
   );
@@ -423,7 +985,7 @@ function RepositoryExplorer({
     <Card>
       <CardHeader title="Repository Explorer" action={<FileCode2 size={18} className="text-accent" />} />
       <div className="grid gap-3 p-4">
-        <div className="max-h-60 overflow-auto rounded-md border border-border p-2 text-sm">
+        <div className="max-h-60 overflow-auto rounded-md border border-border bg-slate-950 p-2 text-sm">
           {tree ? <TreeNode node={tree} onOpenFile={onOpenFile} /> : <span className="text-muted">No repository loaded.</span>}
         </div>
         <pre className="max-h-64 overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100">
@@ -438,7 +1000,7 @@ function TreeNode({ node, onOpenFile }: { node: RepoTreeNode; onOpenFile: (path:
   return (
     <div className="pl-2">
       <button
-        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-slate-100"
+        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-slate-800"
         onClick={() => node.type === "file" && onOpenFile(node.path)}
       >
         {node.type === "file" ? <Code2 size={14} /> : <GitBranch size={14} />}
@@ -506,7 +1068,7 @@ function ConversationView({ items }: { items: Array<Record<string, unknown>> }) 
       <div className="space-y-2 p-4">
         {items.length ? (
           items.map((item, index) => (
-            <div key={index} className="rounded-md border border-border p-3 text-sm">
+            <div key={index} className="rounded-md border border-border bg-slate-950 p-3 text-sm">
               <div className="mb-1 flex items-center justify-between">
                 <span className="font-medium">{String(item.role)}</span>
                 <span className="text-xs text-muted">round {String(item.round_id)}</span>
@@ -536,4 +1098,19 @@ function formatVram(value: unknown) {
   const vram = value as Record<string, unknown>;
   if (!vram.available) return "unavailable";
   return `${vram.memory_used_mb} / ${vram.memory_total_mb} MB`;
+}
+
+function asList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item));
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
