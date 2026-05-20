@@ -3,6 +3,8 @@ from backend.llm.providers.openai_compatible import OpenAICompatibleClient
 
 
 @pytest.mark.asyncio
+@pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_generation():
     async with OpenAICompatibleClient(
         base_url="http://localhost:8010",

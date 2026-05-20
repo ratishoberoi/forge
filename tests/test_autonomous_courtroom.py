@@ -52,7 +52,13 @@ class FakeInference:
 
 class FakeHealth:
     """Always reports runtime ready immediately — no real port polling."""
-    def wait_until_ready(self, *, port: int, timeout: int = 300) -> bool:
+    def wait_until_ready(
+        self,
+        *,
+        port: int,
+        model_name: str | None = None,
+        timeout: int = 300,
+    ) -> bool:
         return True
 
     def is_ready(self, port: int) -> bool:
@@ -196,7 +202,13 @@ def test_autonomous_courtroom_blank_objective_raises(tmp_path):
 def test_autonomous_courtroom_health_failure_raises(tmp_path):
     """If runtime does not become ready, AutonomousCourtroomError raised."""
     class NeverReadyHealth:
-        def wait_until_ready(self, *, port: int, timeout: int = 300) -> bool:
+        def wait_until_ready(
+            self,
+            *,
+            port: int,
+            model_name: str | None = None,
+            timeout: int = 300,
+        ) -> bool:
             return False
         def is_ready(self, port: int) -> bool:
             return False

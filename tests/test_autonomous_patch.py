@@ -76,6 +76,7 @@ async def test_patch_title_matches_task():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_real_patch_generation():
     """Live test — requires running LLM server. Skip in CI."""
     from backend.config.settings import Settings

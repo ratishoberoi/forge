@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+from backend.runtime.output_parser import OutputParser
 
 
 class PatchParser:
@@ -20,10 +21,14 @@ class PatchParser:
     def extract_code(self, text: str) -> str:
         """
         Extract first fenced code block from text.
-        Falls back to stripped raw text if no fence found.
+        Falls back to structured JSON files output, then stripped raw text.
         """
         if not text.strip():
             return ""
+
+        structured = OutputParser().safe_parse_patch_output(text)
+        if structured and structured.files:
+            return next(iter(structured.files.values())).strip()
 
         fenced_blocks = self.FENCE_PATTERN.findall(text)
 
@@ -31,6 +36,21 @@ class PatchParser:
             return fenced_blocks[0].strip()
 
         return text.strip()
+
+    def extract_file(self, text: str, file_path: str) -> str:
+        """
+        Extract a specific file from structured JSON output.
+        Falls back to extract_code() for legacy fenced/plain responses.
+        """
+        structured = OutputParser().safe_parse_patch_output(text)
+        if structured and structured.files:
+            if file_path in structured.files:
+                return structured.files[file_path].strip()
+            normalized = file_path.lstrip("./")
+            for path, content in structured.files.items():
+                if path.lstrip("./") == normalized:
+                    return content.strip()
+        return self.extract_code(text)
 
     def extract_all_blocks(self, text: str) -> list[str]:
         """

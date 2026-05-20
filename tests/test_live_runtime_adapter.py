@@ -108,6 +108,7 @@ def test_build_messages_with_system_prompt():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_primary_runtime():
     adapter = LiveCognitionAdapter()
     response = await adapter.execute(
@@ -121,6 +122,7 @@ async def test_live_primary_runtime():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_judge_runtime():
     adapter = LiveCognitionAdapter()
     response = await adapter.execute(
@@ -134,6 +136,7 @@ async def test_live_judge_runtime():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_health_check_primary():
     adapter = LiveCognitionAdapter()
     result = await adapter.health_check("PRIMARY_CODER")

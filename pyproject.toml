@@ -42,4 +42,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
   "live: requires live local inference server",
+  "persistent_runtime: assumes a pre-running persistent inference server",
 ]

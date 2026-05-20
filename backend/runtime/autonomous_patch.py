@@ -40,24 +40,56 @@ class AutonomousPatchGenerator:
             agent_id=agent_id,
         )
 
-        parsed = self.parser.parse_patch_output(response.content)
+        try:
+            parsed = self.parser.parse_patch_output(response.content)
+        except ValueError:
+            if not response.content.lstrip().startswith("diff --git"):
+                raise
+            return self.validator.validate(
+                StructuredPatch(
+                    title=task,
+                    description=None,
+                    unified_diff=response.content,
+                    impacted_files=[PatchTarget(path=path) for path in impacted_files],
+                    risk=PatchRisk.UNKNOWN,
+                    metadata=self._metadata(response, agent_id),
+                )
+            )
 
         patch = StructuredPatch(
             title=parsed.summary,
             description=parsed.reasoning,
-            unified_diff=response.content,
+            unified_diff=self._diff_from_files(parsed.files),
             impacted_files=[
                 PatchTarget(path=path)
                 for path in parsed.files.keys()
             ],
             risk=PatchRisk(parsed.risk),
-            metadata={
-                "model": response.model,
-                "prompt_tokens": response.prompt_tokens,
-                "completion_tokens": response.completion_tokens,
-                "finish_reason": response.finish_reason,
-                "agent_id": agent_id,
-            },
+            metadata=self._metadata(response, agent_id),
         )
 
         return self.validator.validate(patch)
+
+    @staticmethod
+    def _metadata(response, agent_id: str) -> dict[str, object]:
+        return {
+            "model": response.model,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "finish_reason": response.finish_reason,
+            "agent_id": agent_id,
+        }
+
+    @staticmethod
+    def _diff_from_files(files: dict[str, str]) -> str:
+        chunks: list[str] = []
+        for path, content in files.items():
+            added = "\n".join(f"+{line}" for line in content.splitlines())
+            chunks.append(
+                f"diff --git a/{path} b/{path}\n"
+                f"--- a/{path}\n"
+                f"+++ b/{path}\n"
+                "@@\n"
+                f"{added}"
+            )
+        return "\n".join(chunks)

@@ -5,6 +5,7 @@ from backend.runtime.live_cognition import LiveCognition, LiveCognitionResponse
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_cognition():
     client = OpenAICompatibleClient(
         base_url="http://localhost:8010",
@@ -32,6 +33,7 @@ async def test_live_cognition():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_cognition_context_manager():
     """Test that async context manager works correctly."""
     client = OpenAICompatibleClient(
@@ -52,6 +54,7 @@ async def test_live_cognition_context_manager():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_cognition_critique():
     """Test that critique dispatches to judge client at temp=0.0."""
     client = OpenAICompatibleClient(

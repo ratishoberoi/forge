@@ -72,6 +72,7 @@ class RuntimeProcess:
             "model_name": self.model_name,
             "port": self.port,
             "pid": self.pid,
+            "pgid": self.pgid,
             "active": self.active,
             "launched_at": self.launched_at.isoformat() if self.launched_at else None,
             "metadata": self.metadata,

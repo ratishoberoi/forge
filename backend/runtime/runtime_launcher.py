@@ -3,7 +3,6 @@ import os
 import subprocess
 import time
 from backend.runtime.runtime_process import RuntimeProcess
-import signal
 
 class RuntimeLaunchError(Exception):
     """Raised when runtime launch fails."""
@@ -84,6 +83,14 @@ class RuntimeLauncher:
 
         if self.startup_wait > 0:
             time.sleep(self.startup_wait)
+
+        return_code = proc.poll()
+        if return_code is not None:
+            process.mark_stopped()
+            raise RuntimeLaunchError(
+                f"Runtime for role='{process.role}' exited during startup "
+                f"with code {return_code}. See {stderr_path}."
+            )
 
         return process
 

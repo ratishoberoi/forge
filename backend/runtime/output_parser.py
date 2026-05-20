@@ -22,19 +22,25 @@ class OutputParser:
     - normalize outputs
     """
 
-    JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
+    JSON_PATTERN = re.compile(r"\{", re.DOTALL)
 
     REQUIRED_FIELDS = ("summary", "reasoning", "risk", "files")
 
     def extract_json(self, text: str) -> dict:
         """Extract and parse the first JSON object found in text."""
-        match = self.JSON_PATTERN.search(text)
-        if not match:
+        decoder = json.JSONDecoder()
+        for match in self.JSON_PATTERN.finditer(text):
+            candidate = text[match.start():].strip()
+            try:
+                data, _ = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+
+        if "{" not in text:
             raise ValueError("No JSON payload found.")
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise ValueError("Malformed JSON payload.") from exc
+        raise ValueError("Malformed JSON payload.")
 
     def parse_patch_output(self, text: str) -> ParsedPatchOutput:
         """Parse LLM output into a validated ParsedPatchOutput."""

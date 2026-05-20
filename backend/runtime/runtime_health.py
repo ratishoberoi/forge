@@ -32,28 +32,29 @@ class RuntimeHealth:
         self,
         *,
         port: int,
+        model_name: str | None = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> bool:
         """
-        Poll /v1/models until 200 or timeout.
+        Poll /v1/models until a valid model registry is returned or timeout.
         Returns True if ready, False if timed out.
         """
         url = self._models_url(port)
         deadline = time.monotonic() + timeout
 
         while time.monotonic() < deadline:
-            if self._ping(url):
+            if self._ping(url, model_name=model_name):
                 return True
             time.sleep(self.poll_interval)
 
         return False
 
-    def is_ready(self, port: int) -> bool:
+    def is_ready(self, port: int, model_name: str | None = None) -> bool:
         """
         Single non-blocking check.
-        Returns True if /v1/models returns 200 right now.
+        Returns True if /v1/models returns a valid registry right now.
         """
-        return self._ping(self._models_url(port))
+        return self._ping(self._models_url(port), model_name=model_name)
 
     def wait_until_stopped(
         self,
@@ -81,7 +82,7 @@ class RuntimeHealth:
     def _models_url(self, port: int) -> str:
         return f"http://127.0.0.1:{port}{self.MODELS_PATH}"
 
-    def _ping(self, url: str) -> bool:
+    def _ping(self, url: str, model_name: str | None = None) -> bool:
         try:
             response = requests.get(
                 url,
@@ -93,6 +94,26 @@ class RuntimeHealth:
 
             data = response.json()
 
-            return "data" in data
-        except requests.exceptions.RequestException:
+            return self._valid_model_registry(data, model_name=model_name)
+        except (ValueError, requests.exceptions.RequestException):
             return False
+
+    @staticmethod
+    def _valid_model_registry(data: object, model_name: str | None = None) -> bool:
+        if not isinstance(data, dict):
+            return False
+
+        models = data.get("data")
+        if not isinstance(models, list) or not models:
+            return False
+
+        ids: list[str] = []
+        for model in models:
+            if not isinstance(model, dict):
+                return False
+            model_id = model.get("id")
+            if not isinstance(model_id, str) or not model_id.strip():
+                return False
+            ids.append(model_id)
+
+        return model_name is None or model_name in ids

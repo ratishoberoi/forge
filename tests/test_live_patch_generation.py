@@ -6,6 +6,7 @@ from backend.runtime.live_cognition import LiveCognition, LiveCognitionResponse
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_patch_generation():
     client = OpenAICompatibleClient(
         base_url="http://localhost:8010",
@@ -43,6 +44,7 @@ async def test_live_patch_generation():
 
 @pytest.mark.asyncio
 @pytest.mark.live
+@pytest.mark.persistent_runtime
 async def test_live_patch_generation_context_manager():
     """Same flow but using async context manager for clean teardown."""
     client = OpenAICompatibleClient(

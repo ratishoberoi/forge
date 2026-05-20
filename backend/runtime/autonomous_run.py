@@ -204,8 +204,9 @@ class AutonomousRun:
             )
 
         coder_artifact = latest_round[0]
-        generated_content = self.patch_parser.extract_code(
-            coder_artifact.content
+        generated_content = self.patch_parser.extract_file(
+            coder_artifact.content,
+            target_file,
         )
 
         if not generated_content.strip():

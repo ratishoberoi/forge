@@ -32,6 +32,8 @@ class AutonomousCourtroom:
 
     SHARED_PORT = 8000
     BOOT_TIMEOUT = 300
+    DEFAULT_STAGE_ATTEMPTS = 2
+    DEFAULT_INFERENCE_ATTEMPTS = 2
 
     CODER_MODEL_PATH = "~/Forge/models/qwen-primary"
     CODER_MODEL_NAME = "qwen-primary"
@@ -56,6 +58,8 @@ class AutonomousCourtroom:
         judge_model_name: str = JUDGE_MODEL_NAME,
         port: int = SHARED_PORT,
         boot_timeout: int = BOOT_TIMEOUT,
+        stage_attempts: int = DEFAULT_STAGE_ATTEMPTS,
+        inference_attempts: int = DEFAULT_INFERENCE_ATTEMPTS,
     ) -> None:
         self.swap_engine = swap_engine
         self.exchange = exchange
@@ -68,6 +72,8 @@ class AutonomousCourtroom:
         self.judge_model_name = judge_model_name
         self.port = port
         self.boot_timeout = boot_timeout
+        self.stage_attempts = max(1, stage_attempts)
+        self.inference_attempts = max(1, inference_attempts)
         self.health = RuntimeHealth()
 
     def execute(
@@ -89,71 +95,59 @@ class AutonomousCourtroom:
 
         artifacts: list[CognitionArtifact] = []
 
-        # ── Stage 1: PRIMARY_CODER ────────────────────────────────────────────
-        self._activate_runtime(
-            role=self.CODER_ROLE,
-            model_path=self.coder_model_path,
-            model_name=self.coder_model_name,
-        )
-        coder_artifact = self._infer_and_persist(
-            role=self.CODER_ROLE,
-            model_name=self.coder_model_name,
-            artifact_id=f"coder_round_{round_id}",
-            round_id=round_id,
-            objective=objective,
-            prompt=f"Generate an implementation strategy for: {objective}",
-        )
-        artifacts.append(coder_artifact)
+        try:
+            # ── Stage 1: PRIMARY_CODER ────────────────────────────────────────
+            coder_artifact = self._execute_stage(
+                role=self.CODER_ROLE,
+                model_path=self.coder_model_path,
+                model_name=self.coder_model_name,
+                artifact_id=f"coder_round_{round_id}",
+                round_id=round_id,
+                objective=objective,
+                prompt=self._coder_prompt(objective),
+            )
+            artifacts.append(coder_artifact)
 
-        # ── Stage 2: DEEPSEEK_SYNTH ───────────────────────────────────────────
-        self._activate_runtime(
-            role=self.SYNTH_ROLE,
-            model_path=self.synth_model_path,
-            model_name=self.synth_model_name,
-        )
-        synth_artifact = self._infer_and_persist(
-            role=self.SYNTH_ROLE,
-            model_name=self.synth_model_name,
-            artifact_id=f"synth_round_{round_id}",
-            round_id=round_id,
-            objective=objective,
-            prompt=(
-                "Analyze architectural risks and repository impact "
-                f"for this patch:\n\n{coder_artifact.content}"
-            ),
-            metadata={"critiques_artifact": coder_artifact.artifact_id},
-        )
-        artifacts.append(synth_artifact)
+            # ── Stage 2: DEEPSEEK_SYNTH ───────────────────────────────────────
+            synth_artifact = self._execute_stage(
+                role=self.SYNTH_ROLE,
+                model_path=self.synth_model_path,
+                model_name=self.synth_model_name,
+                artifact_id=f"synth_round_{round_id}",
+                round_id=round_id,
+                objective=objective,
+                prompt=(
+                    "Analyze architectural risks and repository impact "
+                    f"for this patch:\n\n{coder_artifact.content}"
+                ),
+                metadata={"critiques_artifact": coder_artifact.artifact_id},
+            )
+            artifacts.append(synth_artifact)
 
-        # ── Stage 3: JUDGE ────────────────────────────────────────────────────
-        self._activate_runtime(
-            role=self.JUDGE_ROLE,
-            model_path=self.judge_model_path,
-            model_name=self.judge_model_name,
-        )
-        judge_artifact = self._infer_and_persist(
-            role=self.JUDGE_ROLE,
-            model_name=self.judge_model_name,
-            artifact_id=f"judge_round_{round_id}",
-            round_id=round_id,
-            objective=objective,
-            prompt=(
-                "Evaluate whether the following patch and architecture "
-                "critique appear safe and stable:\n\n"
-                f"PATCH:\n{coder_artifact.content}\n\n"
-                f"CRITIQUE:\n{synth_artifact.content}"
-            ),
-            metadata={
-                "reviews_coder": coder_artifact.artifact_id,
-                "reviews_synth": synth_artifact.artifact_id,
-            },
-        )
-        artifacts.append(judge_artifact)
+            # ── Stage 3: JUDGE ────────────────────────────────────────────────
+            judge_artifact = self._execute_stage(
+                role=self.JUDGE_ROLE,
+                model_path=self.judge_model_path,
+                model_name=self.judge_model_name,
+                artifact_id=f"judge_round_{round_id}",
+                round_id=round_id,
+                objective=objective,
+                prompt=(
+                    "Evaluate whether the following patch and architecture "
+                    "critique appear safe and stable:\n\n"
+                    f"PATCH:\n{coder_artifact.content}\n\n"
+                    f"CRITIQUE:\n{synth_artifact.content}"
+                ),
+                metadata={
+                    "reviews_coder": coder_artifact.artifact_id,
+                    "reviews_synth": synth_artifact.artifact_id,
+                },
+            )
+            artifacts.append(judge_artifact)
 
-        # Shutdown final active runtime after round completes
-        self.swap_engine.shutdown_active()
-
-        return artifacts
+            return artifacts
+        finally:
+            self._cleanup_active_runtime()
 
     def execute_multi_round(
         self,
@@ -192,28 +186,89 @@ class AutonomousCourtroom:
         Previous runtime shut down by swap_engine before launch.
         Raises AutonomousCourtroomError if runtime does not boot in time.
         """
-        process = RuntimeProcess(
-            role=role,
-            model_path=model_path,
-            model_name=model_name,
-            port=self.port,
-        )
-
-        self.swap_engine.swap(process)
-
-        ready = self.health.wait_until_ready(
-            port=self.port,
-            timeout=self.boot_timeout,
-        )
-
-        if not ready:
-            raise AutonomousCourtroomError(
-                f"Runtime failed to become ready "
-                f"for role='{role}' on port {self.port} "
-                f"within {self.boot_timeout}s."
+        last_error = ""
+        for attempt in range(1, self.stage_attempts + 1):
+            process = RuntimeProcess(
+                role=role,
+                model_path=model_path,
+                model_name=model_name,
+                port=self.port,
             )
 
-        return process
+            try:
+                self.swap_engine.swap(process)
+            except Exception as exc:
+                last_error = str(exc)
+                self._emit(
+                    f"[SWAP] launch recovery {role} "
+                    f"attempt {attempt}/{self.stage_attempts}: {exc}"
+                )
+                self._cleanup_active_runtime()
+                continue
+
+            ready = self.health.wait_until_ready(
+                port=self.port,
+                model_name=model_name,
+                timeout=self.boot_timeout,
+            )
+
+            if ready:
+                self._emit(f"[READY] {role} healthy model={model_name}")
+                return process
+
+            last_error = (
+                f"Runtime failed to become ready for role='{role}' "
+                f"on port {self.port} within {self.boot_timeout}s."
+            )
+            self._emit(
+                f"[READY] {role} not ready attempt "
+                f"{attempt}/{self.stage_attempts}"
+            )
+            self._cleanup_active_runtime()
+
+        raise AutonomousCourtroomError(last_error)
+
+    def _execute_stage(
+        self,
+        *,
+        role: str,
+        model_path: str,
+        model_name: str,
+        artifact_id: str,
+        round_id: int,
+        objective: str,
+        prompt: str,
+        metadata: dict | None = None,
+    ) -> CognitionArtifact:
+        last_error: Exception | None = None
+        for attempt in range(1, self.inference_attempts + 1):
+            self._activate_runtime(
+                role=role,
+                model_path=model_path,
+                model_name=model_name,
+            )
+            try:
+                return self._infer_and_persist(
+                    role=role,
+                    model_name=model_name,
+                    artifact_id=artifact_id,
+                    round_id=round_id,
+                    objective=objective,
+                    prompt=prompt,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                last_error = exc
+                self._emit(
+                    f"[INFER] {role} failed attempt "
+                    f"{attempt}/{self.inference_attempts}: {exc}"
+                )
+                self._cleanup_active_runtime()
+
+        raise AutonomousCourtroomError(
+            f"Inference failed for role='{role}' after "
+            f"{self.inference_attempts} attempts: {last_error}"
+        )
 
     def _infer_and_persist(
         self,
@@ -234,7 +289,9 @@ class AutonomousCourtroom:
             port=self.port,
             model=model_name,
             prompt=prompt,
+            system_prompt=self._system_prompt_for_role(role),
         )
+        self._emit(f"[INFER] {role} response received")
 
         artifact = CognitionArtifact(
             artifact_id=artifact_id,
@@ -248,3 +305,47 @@ class AutonomousCourtroom:
 
         self.exchange.persist(artifact)
         return artifact
+
+    def _cleanup_active_runtime(self) -> None:
+        try:
+            self.swap_engine.shutdown_active()
+        except Exception as exc:
+            self._emit(f"[SWAP] cleanup failed: {exc}")
+
+    @staticmethod
+    def _coder_prompt(objective: str) -> str:
+        return (
+            "Generate the implementation for this objective:\n"
+            f"{objective}\n\n"
+            "Return ONLY valid JSON with this schema:\n"
+            '{ "summary": str, "reasoning": str, "risk": str, '
+            '"files": { "relative/path.py": "full file content" } }'
+        )
+
+    @staticmethod
+    def _system_prompt_for_role(role: str) -> str:
+        common = (
+            "Return concise, valid JSON only. Do not use markdown fences. "
+            "Do not include prose outside the JSON object."
+        )
+        if role == AutonomousCourtroom.CODER_ROLE:
+            return (
+                common
+                + " The files object must map repository-relative paths to "
+                "complete replacement file contents."
+            )
+        if role == AutonomousCourtroom.SYNTH_ROLE:
+            return (
+                common
+                + ' Use keys "summary", "risks", "required_changes", '
+                '"severity", and "verdict".'
+            )
+        return (
+            common
+            + ' Use keys "summary", "accepted", "blocking_issues", '
+            '"confidence", and "verdict".'
+        )
+
+    @staticmethod
+    def _emit(message: str) -> None:
+        print(message)

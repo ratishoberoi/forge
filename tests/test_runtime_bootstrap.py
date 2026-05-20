@@ -37,10 +37,16 @@ class FakeHealth:
         self._already_up = already_up
         self._stops = stops
 
-    def wait_until_ready(self, *, port: int, timeout: int = 300) -> bool:
+    def wait_until_ready(
+        self,
+        *,
+        port: int,
+        model_name: str | None = None,
+        timeout: int = 300,
+    ) -> bool:
         return self._ready
 
-    def is_ready(self, port: int) -> bool:
+    def is_ready(self, port: int, model_name: str | None = None) -> bool:
         return self._already_up
 
     def wait_until_stopped(self, *, port: int, timeout: int = 30) -> bool:
@@ -50,7 +56,12 @@ class FakeHealth:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def build_process(role: str = "coder", port: int = 8000) -> RuntimeProcess:
-    return RuntimeProcess(role=role, model="fake-model", port=port)
+    return RuntimeProcess(
+        role=role,
+        model_path=f"fake-{role}-path",
+        model_name=f"fake-{role}",
+        port=port,
+    )
 
 
 def make_bootstrap(
@@ -116,7 +127,7 @@ def test_boot_and_verify_success():
     call_count = [0]
     original_is_ready = health.is_ready
 
-    def patched_is_ready(port: int) -> bool:
+    def patched_is_ready(port: int, model_name: str | None = None) -> bool:
         call_count[0] += 1
         # First call = pre-boot check (returns False = port free)
         # Second call = post-boot verify (returns True = ready)

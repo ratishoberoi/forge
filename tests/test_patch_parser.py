@@ -30,6 +30,22 @@ def test_extract_plain_text():
     assert result == "print('x')"
 
 
+def test_extract_structured_json_file_content():
+    parser = PatchParser()
+    text = """
+    {
+      "summary": "Add typing",
+      "reasoning": "Needed",
+      "risk": "low",
+      "files": {
+        "hello.py": "def hello(name: str) -> str:\\n    return name"
+      }
+    }
+    """
+    result = parser.extract_file(text, "hello.py")
+    assert result == "def hello(name: str) -> str:\n    return name"
+
+
 def test_extract_empty_returns_empty():
     parser = PatchParser()
     assert parser.extract_code("") == ""

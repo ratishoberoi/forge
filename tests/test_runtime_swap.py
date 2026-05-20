@@ -1,6 +1,7 @@
 from __future__ import annotations
 import pytest
 from backend.runtime.runtime_process import RuntimeProcess
+from backend.runtime.runtime_health import RuntimeHealth
 from backend.runtime.runtime_swap_engine import RuntimeSwapEngine, RuntimeSwapError
 
 
@@ -9,10 +10,12 @@ from backend.runtime.runtime_swap_engine import RuntimeSwapEngine, RuntimeSwapEr
 class FakeLauncher:
     def __init__(self) -> None:
         self.launched: list[str] = []
+        self.processes: list[RuntimeProcess] = []
 
     def launch(self, process: RuntimeProcess) -> RuntimeProcess:
         process.mark_launched(pid=999)
         self.launched.append(process.role)
+        self.processes.append(process)
         return process
 
 
@@ -40,11 +43,13 @@ class FailingShutdown:
 def build_process(
     role: str,
     port: int = 8000,
+    model_name: str | None = None,
+    model_path: str | None = None,
 ) -> RuntimeProcess:
     return RuntimeProcess(
         role=role,
-        model_path="fake-model-path",
-        model_name="fake-model",
+        model_path=model_path or f"fake-{role}-path",
+        model_name=model_name or f"fake-{role}",
         port=port,
     )
 
@@ -107,8 +112,19 @@ def test_process_to_dict():
     process = build_process("coder")
     d = process.to_dict()
     assert d["role"] == "coder"
+    assert d["model_name"] == "fake-coder"
+    assert d["model_path"] == "fake-coder-path"
     assert d["active"] is False
+    assert "pgid" in d
     assert "launched_at" in d
+
+
+def test_runtime_health_requires_valid_model_registry():
+    valid = {"data": [{"id": "qwen-primary", "object": "model"}]}
+    assert RuntimeHealth._valid_model_registry(valid, model_name="qwen-primary") is True
+    assert RuntimeHealth._valid_model_registry({"data": []}) is False
+    assert RuntimeHealth._valid_model_registry({"data": [{"object": "model"}]}) is False
+    assert RuntimeHealth._valid_model_registry(valid, model_name="qwen-judge") is False
 
 
 # ── RuntimeSwapEngine: swap ───────────────────────────────────────────────────
@@ -133,11 +149,17 @@ def test_runtime_swap_second_shuts_down_first():
 
 def test_runtime_swap_sequence():
     engine, launcher, shutdown = make_engine()
-    engine.swap(build_process("coder"))
-    engine.swap(build_process("judge"))
-    engine.swap(build_process("synth"))
-    assert shutdown.shutdowns == ["coder", "judge"]
-    assert engine.active_role == "synth"
+    engine.swap(build_process("PRIMARY_CODER", model_name="qwen-primary"))
+    engine.swap(build_process("DEEPSEEK_SYNTH", model_name="deepseek-synth"))
+    engine.swap(build_process("JUDGE", model_name="qwen-judge"))
+    assert shutdown.shutdowns == ["PRIMARY_CODER", "DEEPSEEK_SYNTH"]
+    assert launcher.launched == ["PRIMARY_CODER", "DEEPSEEK_SYNTH", "JUDGE"]
+    assert [p.model_name for p in launcher.processes] == [
+        "qwen-primary",
+        "deepseek-synth",
+        "qwen-judge",
+    ]
+    assert engine.active_role == "JUDGE"
     assert engine.swap_count == 2
 
 

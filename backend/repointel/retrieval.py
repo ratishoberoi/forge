@@ -72,7 +72,12 @@ class BM25Index:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.lower())
+        tokens: list[str] = []
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.lower()):
+            tokens.append(token)
+            if "_" in token:
+                tokens.extend(part for part in token.split("_") if part)
+        return tokens
 
 
 class HybridRetrievalEngine:

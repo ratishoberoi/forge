@@ -23,6 +23,13 @@ def test_extract_valid_json():
     assert data["summary"] == "Add typing"
 
 
+def test_extract_json_ignores_trailing_text_with_braces():
+    parser = OutputParser()
+    text = f"{VALID_JSON}\nNotes: use {{ caution }} when reviewing."
+    data = parser.extract_json(text)
+    assert data["summary"] == "Add typing"
+
+
 def test_extract_json_no_json_raises():
     parser = OutputParser()
     with pytest.raises(ValueError, match="No JSON payload found"):

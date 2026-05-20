@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes.chat import router as chat_router
+from backend.api.routes.control_center import router as control_center_router
 from backend.config.settings import Settings, get_settings
 from backend.core.errors import ConfigurationError, register_exception_handlers
 from backend.core.logging import configure_logging, log_event
@@ -53,8 +55,19 @@ def create_app(*, start_runtime: bool = True) -> FastAPI:
                 await engine_manager.shutdown()
 
     app = FastAPI(title="Forge Gateway", version="0.2.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     register_exception_handlers(app)
     app.include_router(chat_router)
+    app.include_router(control_center_router)
     app.state.settings = settings
     app.state.engine_manager = engine_manager
     app.state.chat_service = chat_service

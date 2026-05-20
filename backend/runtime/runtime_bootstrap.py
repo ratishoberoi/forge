@@ -52,6 +52,7 @@ class RuntimeBootstrap:
 
         ready = self.health.wait_until_ready(
             port=process.port,
+            model_name=process.model_name,
             timeout=self.timeout,
         )
 
@@ -70,7 +71,7 @@ class RuntimeBootstrap:
         """
         launched = self.boot(process)
 
-        if not self.health.is_ready(process.port):
+        if not self.health.is_ready(process.port, model_name=process.model_name):
             raise RuntimeBootstrapError(
                 f"Runtime '{process.role}' passed wait_until_ready "
                 f"but failed final verification ping on port {process.port}."
