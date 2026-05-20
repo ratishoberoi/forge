@@ -1,5 +1,11 @@
 from __future__ import annotations
+import socket
 import pytest
+from backend.runtime.runtime_launcher import (
+    RuntimeLaunchError,
+    RuntimeLauncher,
+    RuntimeMemorySnapshot,
+)
 from backend.runtime.runtime_process import RuntimeProcess
 from backend.runtime.runtime_health import RuntimeHealth
 from backend.runtime.runtime_swap_engine import RuntimeSwapEngine, RuntimeSwapError
@@ -125,6 +131,222 @@ def test_runtime_health_requires_valid_model_registry():
     assert RuntimeHealth._valid_model_registry({"data": []}) is False
     assert RuntimeHealth._valid_model_registry({"data": [{"object": "model"}]}) is False
     assert RuntimeHealth._valid_model_registry(valid, model_name="qwen-judge") is False
+
+
+def test_runtime_launcher_reassigns_occupied_port(monkeypatch):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    occupied_port = listener.getsockname()[1]
+    launched_commands: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            launched_commands.append(command)
+            self.pid = 12345
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        RuntimeLauncher,
+        "_gpu_memory_snapshot",
+        lambda self: RuntimeMemorySnapshot(
+            total_mb=48000,
+            used_mb=4000,
+            free_mb=44000,
+            source="test",
+        ),
+    )
+    process = build_process("PRIMARY_CODER", port=occupied_port)
+
+    try:
+        launched = RuntimeLauncher(startup_wait=0, startup_failure_window=0).launch(process)
+    finally:
+        listener.close()
+
+    assert launched.port != occupied_port
+    assert launched.metadata["requested_port"] == occupied_port
+    assert launched.metadata["port_reassigned"] is True
+    assert "--port" in launched_commands[0]
+    assert str(launched.port) in launched_commands[0]
+
+
+def test_runtime_launcher_retries_when_startup_reports_address_in_use(monkeypatch, tmp_path):
+    launched_commands: list[list[str]] = []
+
+    class FakePopen:
+        calls = 0
+
+        def __init__(self, command, **kwargs):
+            FakePopen.calls += 1
+            launched_commands.append(command)
+            self.pid = 12345 + FakePopen.calls
+            self._return_code = 1 if FakePopen.calls == 1 else None
+            if FakePopen.calls == 1:
+                kwargs["stderr"].write(b"OSError: [Errno 98] Address already in use\n")
+                kwargs["stderr"].flush()
+
+        def poll(self):
+            return self._return_code
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        RuntimeLauncher,
+        "_gpu_memory_snapshot",
+        lambda self: RuntimeMemorySnapshot(
+            total_mb=48000,
+            used_mb=4000,
+            free_mb=44000,
+            source="test",
+        ),
+    )
+    process = build_process("PRIMARY_CODER", port=8123)
+
+    launched = RuntimeLauncher(
+        startup_wait=0,
+        startup_failure_window=0,
+        log_dir=str(tmp_path),
+    ).launch(process)
+
+    assert launched.active is True
+    assert FakePopen.calls == 2
+    assert launched.port != 8123
+    assert launched.metadata["requested_port"] == 8123
+    assert launched.metadata["port_reassigned"] is True
+    assert str(8123) in launched_commands[0]
+    assert str(launched.port) in launched_commands[1]
+
+
+def test_runtime_launcher_fallbacks_when_precheck_reports_insufficient_memory(
+    monkeypatch,
+    tmp_path,
+):
+    launched_commands: list[list[str]] = []
+    diagnostics: list[dict[str, object]] = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            launched_commands.append(command)
+            self.pid = 12345
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        RuntimeLauncher,
+        "_gpu_memory_snapshot",
+        lambda self: RuntimeMemorySnapshot(
+            total_mb=11000,
+            used_mb=500,
+            free_mb=10500,
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(RuntimeLauncher, "_estimate_model_size_mb", staticmethod(lambda path: 7000))
+    process = build_process("PRIMARY_CODER", port=8124)
+
+    launched = RuntimeLauncher(
+        startup_wait=0,
+        startup_failure_window=0,
+        log_dir=str(tmp_path),
+        diagnostics_callback=diagnostics.append,
+    ).launch(process)
+
+    command = launched_commands[0]
+    assert launched.active is True
+    assert command[command.index("--max-model-len") + 1] == "4096"
+    assert command[command.index("--max-num-seqs") + 1] == "16"
+    assert "--enforce-eager" in command
+    assert launched.metadata["runtime_diagnostics"]["fallback_status"] == "reduced_context_cache_recovery"
+    assert any(item["load_status"] == "precheck" for item in diagnostics)
+
+
+def test_runtime_launcher_fails_fast_when_all_profiles_exceed_memory(
+    monkeypatch,
+    tmp_path,
+):
+    popen_called = False
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            nonlocal popen_called
+            popen_called = True
+            self.pid = 12345
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+    monkeypatch.setattr(
+        RuntimeLauncher,
+        "_gpu_memory_snapshot",
+        lambda self: RuntimeMemorySnapshot(
+            total_mb=24000,
+            used_mb=23000,
+            free_mb=1000,
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(RuntimeLauncher, "_estimate_model_size_mb", staticmethod(lambda path: 7000))
+    process = build_process("PRIMARY_CODER", port=8125)
+
+    with pytest.raises(RuntimeLaunchError, match="gpu_memory_utilization|insufficient VRAM"):
+        RuntimeLauncher(
+            startup_wait=0,
+            startup_failure_window=0,
+            log_dir=str(tmp_path),
+        ).launch(process)
+
+    assert popen_called is False
+    assert process.metadata["runtime_diagnostics"]["load_status"] == "precheck"
+    assert process.metadata["runtime_diagnostics"]["failure_reason"]
+
+
+def test_runtime_launcher_uses_configured_profile_when_memory_is_sufficient(
+    monkeypatch,
+    tmp_path,
+):
+    launched_commands: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            launched_commands.append(command)
+            self.pid = 12345
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr(
+        RuntimeLauncher,
+        "_gpu_memory_snapshot",
+        lambda self: RuntimeMemorySnapshot(
+            total_mb=48000,
+            used_mb=4000,
+            free_mb=44000,
+            source="test",
+        ),
+    )
+    monkeypatch.setattr(RuntimeLauncher, "_estimate_model_size_mb", staticmethod(lambda path: 7000))
+    process = build_process("PRIMARY_CODER", port=8126)
+
+    RuntimeLauncher(
+        startup_wait=0,
+        startup_failure_window=0,
+        log_dir=str(tmp_path),
+    ).launch(process)
+
+    command = launched_commands[0]
+    assert command[command.index("--max-model-len") + 1] == "8192"
+    assert command[command.index("--max-num-seqs") + 1] == "64"
+    assert "--enforce-eager" not in command
 
 
 # ── RuntimeSwapEngine: swap ───────────────────────────────────────────────────

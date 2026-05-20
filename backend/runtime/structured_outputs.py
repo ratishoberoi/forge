@@ -24,15 +24,30 @@ def validate_role_output(role: str, text: str) -> str:
 
 def _parse_strict_json(text: str) -> dict[str, Any]:
     stripped = text.strip()
-    if not stripped.startswith("{") or not stripped.endswith("}"):
-        raise StructuredOutputError("Response must be a single JSON object with no prose.")
     try:
-        data = json.loads(stripped)
+        if stripped.startswith("{") and stripped.endswith("}"):
+            data = json.loads(stripped)
+        else:
+            data = _extract_first_json_object(stripped)
     except json.JSONDecodeError as exc:
         raise StructuredOutputError("Response is not valid JSON.") from exc
     if not isinstance(data, dict):
         raise StructuredOutputError("Response JSON must be an object.")
     return data
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise StructuredOutputError("Response must contain a valid JSON object.")
 
 
 def _validate_primary(data: dict[str, Any]) -> dict[str, Any]:

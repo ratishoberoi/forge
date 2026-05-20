@@ -119,9 +119,7 @@ class WorkspaceManager:
         repository_name: str | None = None,
         set_active: bool = True,
     ) -> RepositoryRecord:
-        repo_path = Path(path).resolve()
-        if not repo_path.exists() or not repo_path.is_dir():
-            raise WorkspaceManagerError(f"repository path does not exist: {repo_path}")
+        repo_path = self.validate_repository_path(path)
         record = self._record(
             repository_name=repository_name or repo_path.name,
             repository_path=repo_path,
@@ -130,6 +128,51 @@ class WorkspaceManager:
             active=set_active,
         )
         return self._upsert(record, set_active=set_active)
+
+    def validate_repository_path(self, path: str) -> Path:
+        repo_path = _normalize_local_path(path)
+        if not repo_path.exists():
+            raise WorkspaceManagerError(f"repository path does not exist: {repo_path}")
+        if not repo_path.is_dir():
+            raise WorkspaceManagerError(f"repository path is not a directory: {repo_path}")
+        if not os.access(repo_path, os.R_OK):
+            raise WorkspaceManagerError(f"repository path is not readable: {repo_path}")
+        return repo_path
+
+    def browse_directories(self, path: str | None = None) -> dict[str, Any]:
+        if path:
+            current = self.validate_repository_path(path)
+            roots: list[Path] = []
+        else:
+            roots = _browse_roots()
+            current = roots[0] if roots else Path.cwd().resolve()
+        entries: list[dict[str, Any]] = []
+        try:
+            children = sorted(
+                [child for child in current.iterdir() if child.is_dir()],
+                key=lambda item: item.name.lower(),
+            )
+        except OSError as exc:
+            raise WorkspaceManagerError(f"failed to list directory {current}: {exc}") from exc
+        for child in children[:300]:
+            if child.name in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}:
+                continue
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "is_git_repository": (child / ".git").exists(),
+                    "has_app_markers": _has_app_markers(child),
+                }
+            )
+        return {
+            "current": str(current),
+            "parent": str(current.parent) if current.parent != current else None,
+            "roots": [str(root) for root in roots],
+            "entries": entries,
+            "valid_repository": _has_app_markers(current) or (current / ".git").exists(),
+            "diagnostics": _repository_diagnostics(current),
+        }
 
     def clone_repository(
         self,
@@ -331,3 +374,62 @@ def _repository_name_from_source(source: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_local_path(path: str) -> Path:
+    value = path.strip().strip("\"'")
+    if value.startswith("file://"):
+        value = value.removeprefix("file://")
+    if value.startswith("\\\\wsl$\\"):
+        parts = value.replace("\\", "/").split("/")
+        value = "/" + "/".join(parts[4:]) if len(parts) > 4 else "/"
+    if len(value) >= 3 and value[1] == ":" and value[2] in {"\\", "/"}:
+        drive = value[0].lower()
+        remainder = value[3:].replace("\\", "/")
+        value = f"/mnt/{drive}/{remainder}"
+    return Path(value).expanduser().resolve()
+
+
+def _browse_roots() -> list[Path]:
+    candidates = [Path.cwd(), Path.home(), Path("/home"), Path("/mnt")]
+    roots: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.exists() and resolved.is_dir() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _has_app_markers(path: Path) -> bool:
+    markers = {
+        ".git",
+        "pyproject.toml",
+        "requirements.txt",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "README.md",
+        "src",
+        "app",
+        "backend",
+        "frontend",
+    }
+    try:
+        names = {child.name for child in path.iterdir()}
+    except OSError:
+        return False
+    return bool(names & markers)
+
+
+def _repository_diagnostics(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "is_directory": path.is_dir(),
+        "readable": os.access(path, os.R_OK),
+        "is_git_repository": (path / ".git").exists(),
+        "has_app_markers": _has_app_markers(path),
+    }

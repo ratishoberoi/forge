@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,11 +60,15 @@ class RunHistoryRecord:
 
 class RunHistoryStore:
     def __init__(self, path: str | None = None) -> None:
-        self.path = Path(path or ".forge/run_history.json").resolve()
+        default_path = ".forge/test_run_history.json" if _running_under_pytest() else ".forge/run_history.json"
+        self._filter_pytest_records = path is None and not _running_under_pytest()
+        self.path = Path(path or default_path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def list_runs(self, *, repository_id: str | None = None) -> list[RunHistoryRecord]:
         records = self._load()
+        if self._filter_pytest_records:
+            records = [record for record in records if not _is_pytest_record(record)]
         if repository_id:
             records = [record for record in records if record.repository_id == repository_id]
         return sorted(records, key=lambda record: record.updated_at, reverse=True)
@@ -177,3 +182,12 @@ def _stage_from_line(line: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _running_under_pytest() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
+def _is_pytest_record(record: RunHistoryRecord) -> bool:
+    path = record.repository_path.replace("\\", "/")
+    return "/pytest-of-" in path or "/pytest-" in path or path.startswith("/tmp/pytest")

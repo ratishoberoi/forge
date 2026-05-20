@@ -11,6 +11,7 @@ export type RunSummary = {
   id: string;
   objective: string;
   repository_root: string;
+  repository_id?: string | null;
   target_file: string;
   test_command: string[];
   max_iterations: number;
@@ -21,6 +22,8 @@ export type RunSummary = {
   completed_at: string | null;
   error: string | null;
   result: Record<string, unknown> | null;
+  phase?: string;
+  telemetry?: string[];
 };
 
 export type ArtifactSummary = {
@@ -61,6 +64,12 @@ export type ControlSnapshot = {
   logs: string[];
   conversation: Array<Record<string, unknown>>;
   repository_summary: Record<string, unknown> | null;
+  active_objective?: string | null;
+  objective_source?: string;
+  objective_classification?: string | null;
+  generated_plan?: Record<string, unknown> | null;
+  active_repository_id: string | null;
+  active_repository_root: string | null;
   architecture_summary: string | null;
   execution_plan: Record<string, unknown> | null;
   repositories: Array<Record<string, unknown>>;
@@ -71,6 +80,10 @@ export type ControlSnapshot = {
   architecture_memory: Record<string, unknown> | null;
   task_plan: Record<string, unknown> | null;
   execution_graph: Record<string, unknown> | null;
+  completed_nodes?: Array<Record<string, unknown>>;
+  running_node?: Record<string, unknown> | null;
+  blocked_nodes?: Array<Record<string, unknown>>;
+  failed_nodes?: Array<Record<string, unknown>>;
   compressed_context: Record<string, unknown> | null;
   objective_memory: Array<Record<string, unknown>>;
   bootstrap: Record<string, unknown> | null;
@@ -79,29 +92,91 @@ export type ControlSnapshot = {
   visual_validation: Record<string, unknown> | null;
   quality_score: Record<string, unknown> | null;
   release_report: Record<string, unknown> | null;
+  project_brain: Record<string, unknown> | null;
+  semantic_memory: Record<string, unknown> | null;
+  repository_rag: Record<string, unknown> | null;
+  context_assembly: Record<string, unknown> | null;
+  knowledge_graph: Record<string, unknown> | null;
+  adrs: Array<Record<string, unknown>>;
+  tool_activity: Record<string, unknown> | null;
+  runtime_diagnostics?: Record<string, unknown>;
+  diagnostics: Record<string, unknown>;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_FORGE_API_URL ?? "";
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = `${API_BASE}${path}`;
-  const started = performance.now();
-  try {
-    const response = await fetch(url, {
-      cache: "no-store",
-      ...init,
-      headers: {
-        ...(init?.headers ?? {})
-      }
-    });
-    const duration = Math.round(performance.now() - started);
-    console.info("[Forge API]", init?.method ?? "GET", url, response.status, `${duration}ms`);
-    if (!response.ok) throw new Error(await response.text());
-    return response.json() as Promise<T>;
-  } catch (error) {
-    console.error("[Forge API] request failed", init?.method ?? "GET", url, error);
-    throw error;
+export type ApiDiagnostics = {
+  method: string;
+  url: string;
+  status?: number;
+  duration_ms: number;
+  attempts: number;
+};
+
+export class ApiRequestError extends Error {
+  diagnostics: ApiDiagnostics;
+
+  constructor(message: string, diagnostics: ApiDiagnostics) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.diagnostics = diagnostics;
   }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function requestJson<T>(path: string, init?: RequestInit, retries = 2): Promise<T> {
+  const url = `${API_BASE}${path}`;
+  const method = init?.method ?? "GET";
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const started = performance.now();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), method === "GET" ? 15000 : 30000);
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        ...init,
+        signal: controller.signal,
+        headers: {
+          ...(init?.headers ?? {})
+        }
+      });
+      const duration = Math.round(performance.now() - started);
+      console.info("[Forge API]", method, url, response.status, `${duration}ms`, `attempt=${attempt + 1}`);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new ApiRequestError(text || response.statusText, {
+          method,
+          url,
+          status: response.status,
+          duration_ms: duration,
+          attempts: attempt + 1
+        });
+      }
+      return response.json() as Promise<T>;
+    } catch (error) {
+      const duration = Math.round(performance.now() - started);
+      lastError = error;
+      console.error("[Forge API] request failed", method, url, error, `attempt=${attempt + 1}`);
+      if (attempt >= retries) {
+        throw error instanceof ApiRequestError
+          ? error
+          : new ApiRequestError(error instanceof Error ? error.message : String(error), {
+              method,
+              url,
+              duration_ms: duration,
+              attempts: attempt + 1
+            });
+      }
+      await sleep(300 * 2 ** attempt);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export async function fetchSnapshot(repositoryRoot?: string): Promise<ControlSnapshot> {
@@ -145,7 +220,7 @@ export async function controlRun(runId: string, action: "pause" | "resume" | "st
 }
 
 export async function fetchDashboardHealth() {
-  return requestJson<{ status: string; backend: string; generated_at: string }>(
+  return requestJson<Record<string, unknown>>(
     "/api/control/health"
   );
 }
@@ -154,12 +229,27 @@ export async function importRepository(payload: {
   path: string;
   repository_name?: string;
   set_active?: boolean;
+  refresh_intelligence?: boolean;
 }) {
   return requestJson<Record<string, unknown>>("/api/control/workspaces/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
+}
+
+export async function validateRepositoryPath(path: string) {
+  return requestJson<Record<string, unknown>>("/api/control/workspaces/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path })
+  });
+}
+
+export async function browseWorkspace(path?: string) {
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  return requestJson<Record<string, unknown>>(`/api/control/workspaces/browse?${params}`);
 }
 
 export async function cloneRepository(payload: {

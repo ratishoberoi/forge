@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from backend.runtime.json_store import atomic_write_json, load_json_store
 
 
 @dataclass(slots=True)
@@ -126,9 +127,11 @@ class ArchitectureMemory:
         return sorted(self._records().values(), key=lambda record: record.updated_at, reverse=True)
 
     def _records(self) -> dict[str, ArchitectureMemoryRecord]:
-        if not self.path.exists():
-            return {}
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = load_json_store(
+            self.path,
+            default={"repositories": {}},
+            store_name="architecture_memory",
+        )
         return {
             key: ArchitectureMemoryRecord.from_dict(value)
             for key, value in data.get("repositories", {}).items()
@@ -136,9 +139,7 @@ class ArchitectureMemory:
 
     def _save(self, records: dict[str, ArchitectureMemoryRecord]) -> None:
         payload = {"repositories": {key: record.to_dict() for key, record in records.items()}}
-        tmp_path = self.path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        atomic_write_json(self.path, payload)
 
 
 def build_dependency_graph(

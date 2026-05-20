@@ -39,19 +39,39 @@ class AcceptanceValidator:
         changed_files: list[str],
         expected_files: list[str] | None = None,
     ) -> ValidationResult:
+        from backend.runtime.repository_execution_engine import (
+            ObjectiveType,
+            build_acceptance_contract,
+            classify_objective,
+        )
+
         root = Path(repo_root).resolve()
         errors: list[str] = []
-        expected = expected_files or self._expected_files(objective)
+        objective_type = classify_objective(objective)
+        contract = build_acceptance_contract(objective)
+        expected = _dedupe((expected_files or self._expected_files(objective)) + contract.required_files)
         missing = [path for path in expected if not (root / path).exists()]
         if missing:
             errors.append(f"missing expected files: {missing}")
         if not tests_passed:
             errors.append("tests did not pass")
-        required_terms = self._required_terms(objective)
+        required_terms = _dedupe(self._required_terms(objective) + contract.required_terms)
         if required_terms and not self._repository_contains(root, required_terms):
             errors.append(f"objective terms not found in generated files: {required_terms}")
-        route_errors = self._route_errors(root, objective)
+        if objective_type == ObjectiveType.APPLICATION:
+            source_files = self._source_files(root)
+            if len(source_files) < contract.minimum_source_files:
+                errors.append(
+                    f"insufficient functional source files: expected at least {contract.minimum_source_files}, found {len(source_files)}"
+                )
+            if self._changed_only_nonfunctional(changed_files):
+                errors.append("changes only touched documentation, tests, or template bootstrap files")
+        route_errors = self._route_errors(root, objective, contract.required_routes)
         errors.extend(route_errors)
+        model_errors = self._model_errors(root, contract.required_models)
+        errors.extend(model_errors)
+        dependency_errors = self._dependency_errors(root, contract.required_dependencies)
+        errors.extend(dependency_errors)
         return ValidationResult(
             name="acceptance",
             passed=not errors,
@@ -59,6 +79,8 @@ class AcceptanceValidator:
                 "expected_files": expected,
                 "changed_files": changed_files,
                 "required_terms": required_terms,
+                "objective_type": objective_type.value,
+                "contract": contract.to_dict(),
             },
             errors=errors,
         )
@@ -90,18 +112,62 @@ class AcceptanceValidator:
         return all(term in combined for term in terms)
 
     @staticmethod
-    def _route_errors(root: Path, objective: str) -> list[str]:
+    def _route_errors(root: Path, objective: str, required_routes: list[str]) -> list[str]:
         lowered = objective.lower()
-        if not any(term in lowered for term in ("api", "oauth", "auth", "login")):
+        if not required_routes and not any(term in lowered for term in ("api", "oauth", "auth", "login")):
             return []
         source = "\n".join(
             path.read_text(encoding="utf-8", errors="replace")
             for path in root.rglob("*.py")
             if path.is_file()
         )
+        missing = [route for route in required_routes if route not in source]
+        if missing:
+            return [f"required routes were not found: {missing}"]
         if any(pattern in source for pattern in ("@app.get", "@app.post", "Blueprint(", "urlpatterns")):
             return []
         return ["required API or route definitions were not found"]
+
+    @staticmethod
+    def _model_errors(root: Path, required_models: list[str]) -> list[str]:
+        if not required_models:
+            return []
+        source = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in root.rglob("*.py")
+            if path.is_file()
+        ).lower()
+        missing = [model for model in required_models if model.lower() not in source]
+        return [f"required models were not found: {missing}"] if missing else []
+
+    @staticmethod
+    def _dependency_errors(root: Path, required_dependencies: list[str]) -> list[str]:
+        if not required_dependencies:
+            return []
+        dependency_text = ""
+        for name in ("pyproject.toml", "requirements.txt", "package.json"):
+            path = root / name
+            if path.exists():
+                dependency_text += "\n" + path.read_text(encoding="utf-8", errors="replace").lower()
+        missing = [dependency for dependency in required_dependencies if dependency.lower() not in dependency_text]
+        return [f"required dependencies were not found: {missing}"] if missing else []
+
+    @staticmethod
+    def _source_files(root: Path) -> list[str]:
+        return [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".html"}
+            and not path.relative_to(root).as_posix().startswith("tests/")
+        ]
+
+    @staticmethod
+    def _changed_only_nonfunctional(changed_files: list[str]) -> bool:
+        if not changed_files:
+            return True
+        nonfunctional = {"README.md", "Dockerfile", "app.py", "app/main.py", "tests/test_app.py"}
+        return set(changed_files) <= nonfunctional
 
 
 class BuildValidator:
@@ -235,3 +301,11 @@ class QualityScorer:
 
 def split_commands(command_texts: list[str]) -> list[list[str]]:
     return [re.split(r"\s+", command.strip()) for command in command_texts if command.strip()]
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        if item and item not in result:
+            result.append(item)
+    return result

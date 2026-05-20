@@ -6,14 +6,15 @@ import os
 import subprocess
 import uuid
 import asyncio
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -27,9 +28,12 @@ from backend.runtime.git_manager import GitManager, GitManagerError
 from backend.runtime.repository_execution_engine import (
     RepositoryExecutionEngine,
     RepositoryExecutionError,
+    classify_objective,
 )
 from backend.runtime.run_history import RunHistoryError, RunHistoryStore
 from backend.runtime.long_horizon import ObjectiveMemory
+from backend.runtime.project_brain import ProjectBrain
+from backend.runtime.semantic_memory import SemanticMemory
 from backend.runtime.workspace_manager import WorkspaceManager, WorkspaceManagerError
 
 
@@ -42,6 +46,45 @@ RunStatus = Literal[
     "failed",
     "cancelled",
 ]
+
+RunPhase = Literal[
+    "QUEUED",
+    "REPOSITORY_SCAN",
+    "PLANNING",
+    "CODER",
+    "SYNTH",
+    "JUDGE",
+    "PATCH",
+    "TESTS",
+    "REPAIR",
+    "CONVERGED",
+    "FAILED",
+]
+
+PHASE_ORDER: tuple[RunPhase, ...] = (
+    "QUEUED",
+    "REPOSITORY_SCAN",
+    "PLANNING",
+    "CODER",
+    "SYNTH",
+    "JUDGE",
+    "PATCH",
+    "TESTS",
+    "REPAIR",
+    "CONVERGED",
+)
+
+PHASE_STEP_LABELS: dict[str, str] = {
+    "REPOSITORY_SCAN": "Repository Scan",
+    "PLANNING": "Planning",
+    "CODER": "Primary Coder",
+    "SYNTH": "DeepSeek Synth",
+    "JUDGE": "Judge",
+    "PATCH": "Patch Apply",
+    "TESTS": "Test Execution",
+    "REPAIR": "Repair",
+    "CONVERGED": "Converged",
+}
 
 COURTROOM_ROLES = ("PRIMARY_CODER", "DEEPSEEK_SYNTH", "JUDGE")
 TIMELINE_STAGES = (
@@ -87,6 +130,8 @@ class RunSummary(BaseModel):
     stop_requested: bool = False
     pause_requested: bool = False
     result: dict | None = None
+    phase: RunPhase = "QUEUED"
+    telemetry: list[str] = Field(default_factory=list)
 
 
 class ArtifactSummary(BaseModel):
@@ -121,6 +166,12 @@ class ControlCenterSnapshot(BaseModel):
     logs: list[str]
     conversation: list[dict[str, object]]
     repository_summary: dict[str, object] | None = None
+    active_objective: str | None = None
+    objective_source: str = "fallback"
+    objective_classification: str | None = None
+    generated_plan: dict[str, object] | None = None
+    active_repository_id: str | None = None
+    active_repository_root: str | None = None
     architecture_summary: str | None = None
     execution_plan: dict[str, object] | None = None
     repositories: list[dict[str, object]] = Field(default_factory=list)
@@ -131,6 +182,10 @@ class ControlCenterSnapshot(BaseModel):
     architecture_memory: dict[str, object] | None = None
     task_plan: dict[str, object] | None = None
     execution_graph: dict[str, object] | None = None
+    completed_nodes: list[dict[str, object]] = Field(default_factory=list)
+    running_node: dict[str, object] | None = None
+    blocked_nodes: list[dict[str, object]] = Field(default_factory=list)
+    failed_nodes: list[dict[str, object]] = Field(default_factory=list)
     compressed_context: dict[str, object] | None = None
     objective_memory: list[dict[str, object]] = Field(default_factory=list)
     bootstrap: dict[str, object] | None = None
@@ -139,12 +194,22 @@ class ControlCenterSnapshot(BaseModel):
     visual_validation: dict[str, object] | None = None
     quality_score: dict[str, object] | None = None
     release_report: dict[str, object] | None = None
+    project_brain: dict[str, object] | None = None
+    semantic_memory: dict[str, object] | None = None
+    repository_rag: dict[str, object] | None = None
+    context_assembly: dict[str, object] | None = None
+    knowledge_graph: dict[str, object] | None = None
+    adrs: list[dict[str, object]] = Field(default_factory=list)
+    tool_activity: dict[str, object] | None = None
+    runtime_diagnostics: dict[str, object] = Field(default_factory=dict)
+    diagnostics: dict[str, object] = Field(default_factory=dict)
 
 
 class ImportRepositoryRequest(BaseModel):
     path: str
     repository_name: str | None = None
     set_active: bool = True
+    refresh_intelligence: bool = True
 
 
 class CloneRepositoryRequest(BaseModel):
@@ -185,6 +250,10 @@ class BenchmarkRequest(BaseModel):
     cases: list[dict[str, object]] = Field(default_factory=list)
 
 
+class ValidateRepositoryRequest(BaseModel):
+    path: str
+
+
 @dataclass(slots=True)
 class RunRecord:
     request: RunRequest
@@ -198,6 +267,9 @@ class RunRecord:
     result: dict | None = None
     stop_requested: bool = False
     pause_requested: bool = False
+    phase: RunPhase = "QUEUED"
+    telemetry: list[str] = field(default_factory=list)
+    execution_steps: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)
@@ -220,7 +292,97 @@ class RunRecord:
             stop_requested=self.stop_requested,
             pause_requested=self.pause_requested,
             result=self.result,
+            phase=self.phase,
+            telemetry=self.telemetry,
         )
+
+    def transition(self, phase: RunPhase) -> None:
+        current_index = PHASE_ORDER.index(self.phase) if self.phase in PHASE_ORDER else -1
+        previous_phase = self.phase
+        if phase == "FAILED":
+            self.phase = phase
+        else:
+            next_index = PHASE_ORDER.index(phase)
+            if next_index < current_index:
+                raise RuntimeError(f"invalid run transition: {self.phase} -> {phase}")
+            self.phase = phase
+        message = f"[{phase}] {self.id}"
+        self.telemetry.append(message)
+        self._transition_step(previous_phase=previous_phase, phase=phase)
+        self.touch()
+
+    def event_graph(self) -> dict[str, object]:
+        steps = [
+            self.execution_steps[key]
+            for key in PHASE_STEP_LABELS
+            if key in self.execution_steps
+        ]
+        return {
+            "objective": self.request.objective,
+            "steps": steps,
+            "completed": [step["step_id"] for step in steps if step.get("status") == "COMPLETED"],
+            "blocked": [step["step_id"] for step in steps if step.get("status") == "BLOCKED"],
+            "failed": [step["step_id"] for step in steps if step.get("status") == "FAILED"],
+            "running": next((step["step_id"] for step in steps if step.get("status") == "RUNNING"), None),
+        }
+
+    def _transition_step(self, *, previous_phase: RunPhase, phase: RunPhase) -> None:
+        now = datetime.now(timezone.utc)
+        if phase == "FAILED":
+            running = self._running_step()
+            if running:
+                self._finish_step(running, now, status="FAILED")
+                self.telemetry.append(f"[STEP_FAILED] {running}")
+            return
+        if phase == previous_phase and self.execution_steps.get(phase, {}).get("status") == "RUNNING":
+            return
+        running = self._running_step()
+        if running and running != phase:
+            self._finish_step(running, now, status="COMPLETED")
+            self.telemetry.append(f"[STEP_COMPLETE] {running}")
+        if phase in PHASE_STEP_LABELS:
+            step = self.execution_steps.setdefault(
+                phase,
+                {
+                    "step_id": phase,
+                    "task_id": self.id,
+                    "kind": phase.lower(),
+                    "title": PHASE_STEP_LABELS[phase],
+                    "dependencies": [],
+                    "status": "PENDING",
+                    "started_at": None,
+                    "finished_at": None,
+                    "duration_ms": None,
+                    "metadata": {},
+                },
+            )
+            if step.get("status") in {"PENDING", "BLOCKED"}:
+                step["status"] = "RUNNING"
+                step["started_at"] = now.isoformat()
+                self.telemetry.append(f"[STEP_START] {phase}")
+            if phase == "CONVERGED":
+                self._finish_step(phase, now, status="COMPLETED")
+                self.telemetry.append(f"[STEP_COMPLETE] {phase}")
+
+    def _running_step(self) -> str | None:
+        for key, step in self.execution_steps.items():
+            if step.get("status") == "RUNNING":
+                return key
+        return None
+
+    def _finish_step(self, phase: str, now: datetime, *, status: str) -> None:
+        step = self.execution_steps.get(phase)
+        if not step:
+            return
+        step["status"] = status
+        step["finished_at"] = now.isoformat()
+        started_at = step.get("started_at")
+        if isinstance(started_at, str):
+            try:
+                started = datetime.fromisoformat(started_at)
+                step["duration_ms"] = round((now - started).total_seconds() * 1000, 2)
+            except ValueError:
+                step["duration_ms"] = None
 
 
 class ControlCenterState:
@@ -230,14 +392,26 @@ class ControlCenterState:
         self._logs: deque[str] = deque(maxlen=500)
         self._lock = Lock()
         self._execution_lock = Lock()
+        self._dispatching: set[str] = set()
         self.workspace_manager = WorkspaceManager()
         self.run_history = RunHistoryStore()
+        self._preparation_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
+        self._preparation_inflight: dict[str, asyncio.Task[dict[str, object] | None]] = {}
+        self._diagnostics: dict[str, object] = {
+            "snapshot_cache_hits": 0,
+            "snapshot_cache_misses": 0,
+            "last_snapshot_error": None,
+            "last_snapshot_duration_ms": None,
+        }
+        self._runtime_diagnostics: dict[str, object] = {}
 
     def create_run(self, request: RunRequest) -> RunRecord:
         record = RunRecord(request=request)
         with self._lock:
             self._runs[record.id] = record
             self.log(f"[RUN] queued {record.id}: {request.objective}")
+            self.log(f"[OBJECTIVE_CLASSIFICATION] {record.id}: {classify_objective(request.objective).value}")
+            self.log(f"[STATE] {record.id} -> QUEUED")
         return record
 
     def get_run(self, run_id: str) -> RunRecord:
@@ -273,6 +447,14 @@ class ControlCenterState:
     def logs(self) -> list[str]:
         return list(self._logs)
 
+    def update_runtime_diagnostics(self, diagnostics: dict[str, object]) -> None:
+        with self._lock:
+            self._runtime_diagnostics = dict(diagnostics)
+
+    def runtime_diagnostics(self) -> dict[str, object]:
+        with self._lock:
+            return dict(self._runtime_diagnostics)
+
     def pause(self, run_id: str) -> RunRecord:
         record = self.get_run(run_id)
         record.pause_requested = True
@@ -304,6 +486,27 @@ class ControlCenterState:
         with self._execution_lock:
             self._execute_run_locked(run_id)
 
+    def dispatch_run(self, run_id: str) -> None:
+        with self._lock:
+            record = self._runs.get(run_id)
+            if record is None:
+                raise KeyError(run_id)
+            if record.status != "queued":
+                return
+            if run_id in self._dispatching:
+                return
+            self._dispatching.add(run_id)
+            self.log(f"[DISPATCH] {run_id}")
+
+        def worker() -> None:
+            try:
+                self.execute_run(run_id)
+            finally:
+                with self._lock:
+                    self._dispatching.discard(run_id)
+
+        Thread(target=worker, name=f"forge-run-{run_id}", daemon=True).start()
+
     def _execute_run_locked(self, run_id: str) -> None:
         record = self.get_run(run_id)
         if record.stop_requested:
@@ -314,9 +517,10 @@ class ControlCenterState:
             return
 
         record.status = "running"
+        record.transition("REPOSITORY_SCAN")
         record.started_at = datetime.now(timezone.utc)
         record.touch()
-        self.log(f"[RUN] started {run_id}")
+        self.log(f"[RUN_START] {run_id}: {record.request.objective}")
         branch: str | None = None
         try:
             self.run_history.record_started(
@@ -336,10 +540,18 @@ class ControlCenterState:
                 test_command=record.request.test_command,
                 max_iterations=record.request.max_iterations,
                 run_id=record.id,
+                progress_callback=record.transition,
+                telemetry_callback=self.log,
+                runtime_diagnostics_callback=self.update_runtime_diagnostics,
             )
             record.result = result
             branch = result.get("execution_branch") if isinstance(result, dict) else None
-            record.status = "completed"
+            if result.get("tests_passed"):
+                record.status = "completed"
+                record.transition("CONVERGED")
+            else:
+                record.status = "failed"
+                record.transition("FAILED")
             self.run_history.record_completed(
                 run_id=record.id,
                 status=record.status,
@@ -351,6 +563,10 @@ class ControlCenterState:
         except Exception as exc:
             record.error = str(exc)
             record.status = "failed"
+            try:
+                record.transition("FAILED")
+            except RuntimeError:
+                record.phase = "FAILED"
             try:
                 self.run_history.record_completed(
                     run_id=record.id,
@@ -377,11 +593,15 @@ def get_control_state() -> ControlCenterState:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, object]:
+    state = get_control_state()
     return {
         "status": "ok",
         "backend": "forge-control-center",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "active_runs": len([record for record in state.runs() if record.status in {"queued", "running", "paused"}]),
+        "snapshot_cache_entries": len(state._preparation_cache),
+        "diagnostics": state._diagnostics,
     }
 
 
@@ -391,10 +611,30 @@ async def snapshot(
     artifact_dir: str = "runtime_artifacts",
 ) -> ControlCenterSnapshot:
     state = get_control_state()
+    started = time.perf_counter()
     active = state.active_run()
-    repo_root = repository_root or (active.request.repository_root if active else os.getcwd())
+    active_workspace = state.workspace_manager.active_repository()
+    repo_root = (
+        repository_root
+        or (active.request.repository_root if active else None)
+        or (active_workspace.repository_path if active_workspace else None)
+        or os.getcwd()
+    )
+    repo_root = str(Path(repo_root).resolve())
+    context_record = _snapshot_context_record(state, repo_root)
+    snapshot_objective = context_record.request.objective if context_record else "Inspect repository"
+    objective_source = (
+        "active_run"
+        if context_record and active and context_record.id == active.id
+        else "latest_run"
+        if context_record
+        else "fallback"
+    )
+    artifact_source = active or context_record or _latest_record_with_result(state)
+    artifact_dir = artifact_source.request.artifact_dir if artifact_source else artifact_dir
     artifacts = _load_artifacts(artifact_dir)
-    latest_result = _latest_result(state)
+    latest_result = context_record.result if context_record and context_record.result else _latest_result(state)
+    event_graph = context_record.event_graph() if context_record else None
     repositories = [record.to_dict() for record in state.workspace_manager.list_repositories()]
     active_repository = (
         state.workspace_manager.active_repository().to_dict()
@@ -402,16 +642,18 @@ async def snapshot(
         else None
     )
     preparation = await _repository_preparation(
+        state,
         repo_root,
-        active.request.objective if active else "Inspect repository",
+        snapshot_objective,
     )
+    state._diagnostics["last_snapshot_duration_ms"] = round((time.perf_counter() - started) * 1000, 2)
     return ControlCenterSnapshot(
         generated_at=datetime.now(timezone.utc).isoformat(),
         active_run=active.summary() if active else None,
         runs=[record.summary() for record in state.runs()],
         courtroom=_courtroom_state(active),
         timeline=_timeline_state(active),
-        runtime=_runtime_snapshot(active),
+        runtime=_runtime_snapshot(active, state.runtime_diagnostics()),
         artifacts=artifacts,
         patch=_patch_snapshot(repo_root),
         tests=_tests_snapshot(latest_result),
@@ -419,6 +661,20 @@ async def snapshot(
         logs=_combined_logs(state, latest_result),
         conversation=_conversation_summaries(artifacts),
         repository_summary=preparation["scan"] if preparation else None,
+        active_objective=snapshot_objective,
+        objective_source=objective_source,
+        objective_classification=(
+            str((preparation.get("plan") or {}).get("objective_type"))
+            if preparation and isinstance(preparation.get("plan"), dict)
+            else classify_objective(snapshot_objective).value
+        ),
+        generated_plan=preparation["plan"] if preparation else None,
+        active_repository_id=(
+            context_record.request.repository_id
+            if context_record and context_record.request.repository_id
+            else active_workspace.repository_id if active_workspace else None
+        ),
+        active_repository_root=repo_root,
         architecture_summary=(
             preparation["scan"].get("architecture_summary")
             if preparation and isinstance(preparation.get("scan"), dict)
@@ -436,7 +692,11 @@ async def snapshot(
             else _architecture_memory_snapshot(repo_root)
         ),
         task_plan=preparation.get("task_plan") if preparation else None,
-        execution_graph=preparation.get("execution_graph") if preparation else None,
+        execution_graph=event_graph or (preparation.get("execution_graph") if preparation else None),
+        completed_nodes=_graph_nodes(event_graph, "COMPLETED"),
+        running_node=next(iter(_graph_nodes(event_graph, "RUNNING")), None),
+        blocked_nodes=_graph_nodes(event_graph, "BLOCKED"),
+        failed_nodes=_graph_nodes(event_graph, "FAILED"),
         compressed_context=preparation.get("compressed_context") if preparation else None,
         objective_memory=[
             record.to_dict()
@@ -448,11 +708,24 @@ async def snapshot(
         visual_validation=_result_section(latest_result, "visual_validation"),
         quality_score=_result_section(latest_result, "quality_score"),
         release_report=_result_section(latest_result, "release_report"),
+        project_brain=preparation.get("project_brain") if preparation else _project_brain_snapshot(repo_root),
+        semantic_memory=_semantic_memory_snapshot(repo_root, snapshot_objective),
+        repository_rag=preparation.get("repository_rag") if preparation else None,
+        context_assembly=preparation.get("context_assembly") if preparation else None,
+        knowledge_graph=preparation.get("knowledge_graph") if preparation else None,
+        adrs=preparation.get("adrs") if preparation and isinstance(preparation.get("adrs"), list) else [],
+        tool_activity=preparation.get("tool_activity") if preparation else None,
+        runtime_diagnostics=state.runtime_diagnostics(),
+        diagnostics={
+            **state._diagnostics,
+            "repository_root": str(Path(repo_root).resolve()),
+            "preparation_available": preparation is not None,
+        },
     )
 
 
 @router.post("/runs", response_model=RunSummary)
-async def create_run(request: RunRequest, background_tasks: BackgroundTasks) -> RunSummary:
+async def create_run(request: RunRequest) -> RunSummary:
     state = get_control_state()
     if request.repository_id:
         try:
@@ -463,9 +736,25 @@ async def create_run(request: RunRequest, background_tasks: BackgroundTasks) -> 
     repo_root = Path(request.repository_root).resolve()
     if not repo_root.exists() or not repo_root.is_dir():
         raise HTTPException(status_code=400, detail=f"repository_root does not exist: {repo_root}")
-    record = state.create_run(request.model_copy(update={"repository_root": str(repo_root)}))
+    try:
+        state.workspace_manager.validate_repository_path(str(repo_root))
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    provisional = f"run-{uuid.uuid4().hex}"
+    artifact_dir = request.artifact_dir
+    if artifact_dir == "runtime_artifacts":
+        artifact_dir = str(Path(".forge") / "runs" / provisional / "artifacts")
+    record = RunRecord(
+        id=provisional,
+        request=request.model_copy(update={"repository_root": str(repo_root), "artifact_dir": artifact_dir}),
+    )
+    with state._lock:
+        state._runs[record.id] = record
+        state.log(f"[RUN] queued {record.id}: {request.objective}")
+        state.log(f"[OBJECTIVE_CLASSIFICATION] {record.id}: {classify_objective(request.objective).value}")
+        state.log(f"[STATE] {record.id} -> QUEUED")
     if request.execute:
-        background_tasks.add_task(state.execute_run, record.id)
+        state.dispatch_run(record.id)
     return record.summary()
 
 
@@ -585,12 +874,50 @@ async def list_repositories(include_archived: bool = False) -> dict[str, object]
 @router.post("/workspaces/import")
 async def import_repository(request: ImportRepositoryRequest) -> dict[str, object]:
     try:
-        record = get_control_state().workspace_manager.import_local_repository(
+        state = get_control_state()
+        record = state.workspace_manager.import_local_repository(
             request.path,
             repository_name=request.repository_name,
             set_active=request.set_active,
         )
+        if request.refresh_intelligence:
+            try:
+                record = await asyncio.to_thread(
+                    lambda: asyncio.run(
+                        state.workspace_manager.refresh_intelligence(
+                            record.repository_id,
+                            force=True,
+                        )
+                    )
+                )
+                state._preparation_cache.clear()
+            except Exception as exc:
+                record.metadata = {
+                    **record.metadata,
+                    "intelligence_error": str(exc),
+                }
         return record.to_dict()
+    except WorkspaceManagerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/workspaces/validate")
+async def validate_repository(request: ValidateRepositoryRequest) -> dict[str, object]:
+    try:
+        path = get_control_state().workspace_manager.validate_repository_path(request.path)
+        return {
+            "valid": True,
+            "path": str(path),
+            "diagnostics": get_control_state().workspace_manager.browse_directories(str(path))["diagnostics"],
+        }
+    except WorkspaceManagerError as exc:
+        return {"valid": False, "path": request.path, "error": str(exc)}
+
+
+@router.get("/workspaces/browse")
+async def browse_workspaces(path: str | None = None) -> dict[str, object]:
+    try:
+        return get_control_state().workspace_manager.browse_directories(path)
     except WorkspaceManagerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -633,10 +960,16 @@ async def delete_repository_metadata(repository_id: str) -> dict[str, str]:
 @router.post("/workspaces/repositories/{repository_id}/refresh")
 async def refresh_repository(repository_id: str, force: bool = False) -> dict[str, object]:
     try:
-        record = await get_control_state().workspace_manager.refresh_intelligence(
-            repository_id,
-            force=force,
+        state = get_control_state()
+        record = await asyncio.to_thread(
+            lambda: asyncio.run(
+                state.workspace_manager.refresh_intelligence(
+                    repository_id,
+                    force=force,
+                )
+            )
         )
+        state._preparation_cache.clear()
         return record.to_dict()
     except WorkspaceManagerError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -748,6 +1081,25 @@ async def objective_memory(repository_root: str | None = None) -> dict[str, obje
     }
 
 
+@router.get("/memory/project-brain")
+async def project_brain(repository_root: str | None = None) -> dict[str, object]:
+    if repository_root:
+        return {"project_brain": _project_brain_snapshot(repository_root)}
+    return {"repositories": [record.to_dict() for record in ProjectBrain().list_records()]}
+
+
+@router.get("/memory/semantic")
+async def semantic_memory(repository_root: str, query: str = "repository") -> dict[str, object]:
+    memory = SemanticMemory()
+    return {
+        "stats": memory.stats(repository_path=repository_root),
+        "items": [
+            item.to_dict()
+            for item in memory.retrieve(repository_path=repository_root, query=query, limit=20)
+        ],
+    }
+
+
 @router.post("/benchmarks/run")
 async def run_benchmarks(request: BenchmarkRequest) -> dict[str, object]:
     cases = [
@@ -800,7 +1152,8 @@ def _load_artifacts(artifact_dir: str) -> list[ArtifactSummary]:
 
 
 def _courtroom_state(active: RunRecord | None) -> list[dict[str, object]]:
-    active_role = "PRIMARY_CODER" if active and active.status == "running" else None
+    phase_to_role = {"CODER": "PRIMARY_CODER", "SYNTH": "DEEPSEEK_SYNTH", "JUDGE": "JUDGE"}
+    active_role = phase_to_role.get(active.phase) if active and active.status == "running" else None
     return [
         {
             "role": role,
@@ -816,29 +1169,42 @@ def _courtroom_state(active: RunRecord | None) -> list[dict[str, object]]:
 
 
 def _timeline_state(active: RunRecord | None) -> list[dict[str, object]]:
-    status = active.status if active else "idle"
     completed = set()
     if active and active.result:
         completed = set(TIMELINE_STAGES)
+    elif active and active.phase in PHASE_ORDER:
+        current_index = PHASE_ORDER.index(active.phase)
+        completed = set(PHASE_ORDER[:current_index])
     return [
         {
             "name": stage,
-            "status": "completed" if stage in completed else ("active" if status == "running" and stage == "Coder" else "pending"),
+            "status": (
+                "completed"
+                if stage.upper().replace(" ", "_") in completed or stage in completed
+                else "active"
+                if active and active.phase == stage.upper().replace(" ", "_")
+                else "pending"
+            ),
         }
         for stage in TIMELINE_STAGES
     ]
 
 
-def _runtime_snapshot(active: RunRecord | None) -> dict[str, object]:
+def _runtime_snapshot(
+    active: RunRecord | None,
+    diagnostics: dict[str, object] | None = None,
+) -> dict[str, object]:
+    diagnostics = diagnostics or {}
     return {
         "active_runtime": active.status if active else "idle",
-        "active_model": "autoswap-controlled" if active else None,
+        "active_model": diagnostics.get("target_model") or ("autoswap-controlled" if active else None),
         "pid": None,
         "pgid": None,
         "memory": _process_memory_snapshot(),
         "vram": _nvidia_smi_snapshot(),
         "swap_count": None,
         "health": "running" if active and active.status == "running" else "idle",
+        "diagnostics": diagnostics,
     }
 
 
@@ -879,6 +1245,22 @@ def _architecture_memory_snapshot(repo_root: str) -> dict[str, object] | None:
     return record.to_dict() if record else None
 
 
+def _project_brain_snapshot(repo_root: str) -> dict[str, object] | None:
+    record = ProjectBrain().get(repo_root)
+    return record.to_dict() if record.previous_objectives or record.architecture_summaries else None
+
+
+def _semantic_memory_snapshot(repo_root: str, query: str) -> dict[str, object]:
+    memory = SemanticMemory()
+    return {
+        "stats": memory.stats(repository_path=repo_root),
+        "retrieved": [
+            item.to_dict()
+            for item in memory.retrieve(repository_path=repo_root, query=query, limit=8)
+        ],
+    }
+
+
 def _tests_snapshot(result: dict | None) -> dict[str, object]:
     if not result:
         return {"status": "idle", "passing": 0, "failing": 0, "retries": 0, "repair_attempts": 0}
@@ -909,6 +1291,19 @@ def _tests_snapshot(result: dict | None) -> dict[str, object]:
         "stdout": result.get("stdout", ""),
         "stderr": result.get("stderr", ""),
     }
+
+
+def _graph_nodes(graph: dict[str, object] | None, status: str) -> list[dict[str, object]]:
+    if not graph:
+        return []
+    steps = graph.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("status") == status
+    ]
 
 
 def _convergence_snapshot(result: dict | None) -> dict[str, object]:
@@ -973,13 +1368,16 @@ def _conversation_summaries(artifacts: list[ArtifactSummary]) -> list[dict[str, 
 
 
 def _combined_logs(state: ControlCenterState, latest_result: dict | None = None) -> list[str]:
-    lines = state.logs()
+    execution_lines = state.logs()
+    for record in state.runs():
+        execution_lines.extend(record.telemetry[-25:])
     latest_result = latest_result if latest_result is not None else _latest_result(state)
     if latest_result:
         repair = latest_result.get("repair_convergence")
         telemetry = repair.get("telemetry") if isinstance(repair, dict) else None
         if isinstance(telemetry, list):
-            lines.extend(str(line) for line in telemetry)
+            execution_lines.extend(str(line) for line in telemetry)
+    runtime_lines: list[str] = []
     log_dir = Path("runtime_logs")
     if log_dir.exists():
         for path in sorted(log_dir.glob("*.log")):
@@ -987,8 +1385,8 @@ def _combined_logs(state: ControlCenterState, latest_result: dict | None = None)
                 tail = path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
             except OSError:
                 continue
-            lines.extend(f"{path.name}: {line}" for line in tail)
-    return lines[-250:]
+            runtime_lines.extend(f"{path.name}: {line}" for line in tail)
+    return execution_lines[-150:] + runtime_lines[-100:]
 
 
 def _latest_result(state: ControlCenterState) -> dict | None:
@@ -996,6 +1394,24 @@ def _latest_result(state: ControlCenterState) -> dict | None:
         if record.result:
             return record.result
     return None
+
+
+def _latest_record_with_result(state: ControlCenterState) -> RunRecord | None:
+    for record in state.runs():
+        if record.result:
+            return record
+    return None
+
+
+def _snapshot_context_record(state: ControlCenterState, repo_root: str) -> RunRecord | None:
+    active = state.active_run()
+    resolved = str(Path(repo_root).resolve())
+    if active and str(Path(active.request.repository_root).resolve()) == resolved:
+        return active
+    for record in state.runs():
+        if str(Path(record.request.repository_root).resolve()) == resolved:
+            return record
+    return active
 
 
 def _result_section(result: dict | None, key: str) -> dict[str, object] | None:
@@ -1036,12 +1452,41 @@ def _git_manager(
     raise HTTPException(status_code=400, detail="repository_root or repository_id is required")
 
 
-async def _repository_preparation(repo_root: str, objective: str) -> dict[str, object] | None:
+async def _repository_preparation(
+    state: ControlCenterState,
+    repo_root: str,
+    objective: str,
+) -> dict[str, object] | None:
+    cache_key = f"{Path(repo_root).resolve()}::{objective}"
+    cached = state._preparation_cache.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < 30:
+        state._diagnostics["snapshot_cache_hits"] = int(state._diagnostics.get("snapshot_cache_hits", 0)) + 1
+        return cached[1]
+    inflight = state._preparation_inflight.get(cache_key)
+    if inflight:
+        state._diagnostics["snapshot_cache_hits"] = int(state._diagnostics.get("snapshot_cache_hits", 0)) + 1
+        return await inflight
+    state._diagnostics["snapshot_cache_misses"] = int(state._diagnostics.get("snapshot_cache_misses", 0)) + 1
+    task = asyncio.create_task(asyncio.to_thread(_prepare_repository_sync, repo_root, objective))
+    state._preparation_inflight[cache_key] = task
     try:
-        engine = RepositoryExecutionEngine(repo_root=repo_root)
-        return (await engine.prepare(objective)).to_dict()
-    except (RepositoryExecutionError, OSError, ValueError):
+        prepared = await task
+        state._preparation_cache[cache_key] = (now, prepared)
+        state._diagnostics["last_snapshot_error"] = None
+        return prepared
+    except Exception as exc:
+        state._diagnostics["last_snapshot_error"] = str(exc)
+        state.log(f"[CONTROL] repository preparation failed: {exc}")
+        state._preparation_cache[cache_key] = (now, None)
         return None
+    finally:
+        state._preparation_inflight.pop(cache_key, None)
+
+
+def _prepare_repository_sync(repo_root: str, objective: str) -> dict[str, object]:
+    engine = RepositoryExecutionEngine(repo_root=repo_root)
+    return asyncio.run(engine.prepare(objective)).to_dict()
 
 
 def _safe_root(root: str) -> Path:

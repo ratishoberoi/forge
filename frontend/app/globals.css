@@ -21,6 +21,8 @@
 html,
 body {
   min-height: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -38,7 +40,9 @@ textarea {
 }
 
 pre {
+  max-width: 100%;
   tab-size: 2;
+  white-space: pre;
 }
 
 ::selection {

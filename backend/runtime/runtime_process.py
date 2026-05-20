@@ -75,5 +75,9 @@ class RuntimeProcess:
             "pgid": self.pgid,
             "active": self.active,
             "launched_at": self.launched_at.isoformat() if self.launched_at else None,
-            "metadata": self.metadata,
+            "metadata": {
+                key: value
+                for key, value in self.metadata.items()
+                if not key.startswith("_")
+            },
         }

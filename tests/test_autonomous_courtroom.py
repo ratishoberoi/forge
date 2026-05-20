@@ -92,6 +92,21 @@ class FlakyInference(FakeInference):
         return super().infer(**kwargs)
 
 
+class RecordingHealth(FakeHealth):
+    def __init__(self) -> None:
+        self.ready_ports: list[int] = []
+
+    def wait_until_ready(
+        self,
+        *,
+        port: int,
+        model_name: str | None = None,
+        timeout: int = 300,
+    ) -> bool:
+        self.ready_ports.append(port)
+        return True
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_swap_engine() -> tuple[RuntimeSwapEngine, FakeLauncher, FakeShutdown]:
@@ -267,6 +282,87 @@ def test_autonomous_courtroom_health_failure_raises(tmp_path):
 
     with pytest.raises(AutonomousCourtroomError, match="failed to become ready"):
         courtroom.execute(objective="Improve auth")
+
+
+def test_autonomous_courtroom_recovers_after_runtime_readiness_restart(tmp_path):
+    class FlakyReadyHealth:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait_until_ready(
+            self,
+            *,
+            port: int,
+            model_name: str | None = None,
+            timeout: int = 300,
+        ) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+        def is_ready(self, port: int) -> bool:
+            return True
+
+    engine, launcher, shutdown = make_swap_engine()
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=FakeInference(),
+        stage_attempts=2,
+    )
+    health = FlakyReadyHealth()
+    courtroom.health = health
+
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert len(artifacts) == 3
+    assert health.calls == 4
+    assert launcher.launched[:2] == ["PRIMARY_CODER", "PRIMARY_CODER"]
+    assert "PRIMARY_CODER" in shutdown.shutdowns
+
+
+def test_autonomous_courtroom_uses_reassigned_runtime_port(tmp_path):
+    class ReassigningLauncher(FakeLauncher):
+        def launch(self, process: RuntimeProcess) -> RuntimeProcess:
+            process.port = 49152
+            return super().launch(process)
+
+    launcher = ReassigningLauncher()
+    shutdown = FakeShutdown()
+    engine = RuntimeSwapEngine(
+        launcher=launcher,
+        shutdown=shutdown,
+        swap_delay_seconds=0,
+    )
+    inference = FakeInference()
+    courtroom = AutonomousCourtroom(
+        swap_engine=engine,
+        exchange=make_exchange(tmp_path),
+        inference=inference,
+        port=8000,
+    )
+    health = RecordingHealth()
+    courtroom.health = health
+
+    artifacts = courtroom.execute(objective="Improve auth")
+
+    assert len(artifacts) == 3
+    assert health.ready_ports == [49152, 49152, 49152]
+    assert courtroom.port == 49152
+
+
+def test_autonomous_courtroom_syncs_context_window_to_runtime_fallback(tmp_path):
+    courtroom, _, _ = make_courtroom(tmp_path)
+    process = RuntimeProcess(
+        role="PRIMARY_CODER",
+        model_path="fake",
+        model_name="qwen-primary",
+        port=8000,
+        metadata={"runtime_diagnostics": {"profile": {"max_model_len": 2048}}},
+    )
+
+    courtroom._sync_context_window_from_runtime(process)
+
+    assert courtroom.context_window == 2048
 
 
 # ── execute_multi_round ───────────────────────────────────────────────────────

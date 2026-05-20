@@ -5,13 +5,17 @@ import {
   Activity,
   Archive,
   Bot,
+  Brain,
   CheckCircle2,
   Clock,
   Code2,
+  Database,
   FileCode2,
+  FolderOpen,
   GitBranch,
   GitCompare,
   ListChecks,
+  Network,
   Pause,
   Play,
   RefreshCw,
@@ -22,8 +26,10 @@ import {
 } from "lucide-react";
 import {
   ArtifactSummary,
+  ApiRequestError,
   ControlSnapshot,
   RepoTreeNode,
+  browseWorkspace,
   commitRepository,
   controlRun,
   createRun,
@@ -36,7 +42,8 @@ import {
   refreshRepository,
   rollbackRepository,
   runBenchmarks,
-  switchRepository
+  switchRepository,
+  validateRepositoryPath
 } from "@/lib/api";
 import { Badge, Button, Card, CardHeader, Input, Textarea } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -49,8 +56,10 @@ export default function ControlCenterPage() {
   const [objective, setObjective] = useState("Build a calculator app");
   const [iterations, setIterations] = useState(3);
   const [testCommand, setTestCommand] = useState("pytest -q");
-  const [execute, setExecute] = useState(false);
+  const [execute, setExecute] = useState(true);
   const [repositoryImportPath, setRepositoryImportPath] = useState(defaultRepo);
+  const [workspaceBrowser, setWorkspaceBrowser] = useState<Record<string, unknown> | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("Forge autonomous changes");
   const [snapshot, setSnapshot] = useState<ControlSnapshot | null>(null);
   const [tree, setTree] = useState<RepoTreeNode | null>(null);
@@ -60,46 +69,107 @@ export default function ControlCenterPage() {
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactSummary | null>(null);
   const [replayEvents, setReplayEvents] = useState<Array<Record<string, unknown>>>([]);
   const [benchmarkSummary, setBenchmarkSummary] = useState<Record<string, unknown> | null>(null);
-  const [health, setHealth] = useState<"checking" | "ok" | "failed">("checking");
+  const [health, setHealth] = useState<"checking" | "ok" | "degraded" | "failed">("checking");
   const [error, setError] = useState<string | null>(null);
+  const [apiStats, setApiStats] = useState({
+    snapshotLatency: 0,
+    healthLatency: 0,
+    failures: 0,
+    lastRefresh: ""
+  });
   const activeRun = snapshot?.active_run ?? null;
+  const loadedRepositoryRoot = snapshot?.active_repository_root || repositoryRoot;
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | undefined;
+    let delay = 2500;
     async function load() {
+      const started = performance.now();
       try {
         const next = await fetchSnapshot(repositoryRoot);
         if (!cancelled) {
           setSnapshot(next);
+          if (next.active_repository_root && next.active_repository_root !== repositoryRoot) {
+            setRepositoryRoot(next.active_repository_root);
+          }
           setError(null);
+          delay = 2500;
+          setApiStats((stats) => ({
+            ...stats,
+            snapshotLatency: Math.round(performance.now() - started),
+            failures: 0,
+            lastRefresh: new Date().toLocaleTimeString()
+          }));
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) {
+          delay = Math.min(delay * 2, 20000);
+          const detail = err instanceof ApiRequestError
+            ? `${err.message} (${err.diagnostics.duration_ms}ms, attempts ${err.diagnostics.attempts})`
+            : err instanceof Error ? err.message : String(err);
+          setError(detail);
+          setApiStats((stats) => ({
+            ...stats,
+            snapshotLatency: Math.round(performance.now() - started),
+            failures: stats.failures + 1
+          }));
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(load, delay);
       }
     }
     load();
-    const interval = window.setInterval(load, 2500);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timer) window.clearTimeout(timer);
     };
   }, [repositoryRoot]);
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | undefined;
+    let failures = 0;
     async function loadHealth() {
+      const started = performance.now();
       try {
         await fetchDashboardHealth();
-        if (!cancelled) setHealth("ok");
+        if (!cancelled) {
+          failures = 0;
+          setHealth("ok");
+          setApiStats((stats) => ({ ...stats, healthLatency: Math.round(performance.now() - started) }));
+        }
       } catch {
-        if (!cancelled) setHealth("failed");
+        if (!cancelled) {
+          failures += 1;
+          setHealth(failures > 2 ? "failed" : "degraded");
+          setApiStats((stats) => ({ ...stats, healthLatency: Math.round(performance.now() - started), failures: stats.failures + 1 }));
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(loadHealth, failures ? Math.min(5000 * 2 ** failures, 30000) : 5000);
       }
     }
     loadHealth();
-    const interval = window.setInterval(loadHealth, 5000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    browseWorkspace(defaultRepo)
+      .then((result) => {
+        if (!cancelled) {
+          setWorkspaceBrowser(result);
+          setWorkspaceError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setWorkspaceError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -107,7 +177,7 @@ export default function ControlCenterPage() {
     let cancelled = false;
     async function loadTree() {
       try {
-        const next = await fetchRepoTree(repositoryRoot);
+        const next = await fetchRepoTree(loadedRepositoryRoot);
         if (!cancelled) setTree(next);
       } catch {
         if (!cancelled) setTree(null);
@@ -117,7 +187,7 @@ export default function ControlCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [repositoryRoot]);
+  }, [loadedRepositoryRoot]);
 
   const filteredArtifacts = useMemo(() => {
     const artifacts = snapshot?.artifacts ?? [];
@@ -158,10 +228,27 @@ export default function ControlCenterPage() {
   }
 
   async function importCurrentRepository() {
-    const record = await importRepository({ path: repositoryImportPath, set_active: true });
+    setWorkspaceError(null);
+    const validation = await validateRepositoryPath(repositoryImportPath);
+    if (!validation.valid) {
+      setWorkspaceError(stringValue(validation.error) || "Repository path is not valid.");
+      return;
+    }
+    const record = await importRepository({ path: repositoryImportPath, set_active: true, refresh_intelligence: true });
     const nextRoot = stringValue(record.repository_path);
-    if (nextRoot) setRepositoryRoot(nextRoot);
+    if (nextRoot) {
+      setRepositoryRoot(nextRoot);
+      setWorkspaceBrowser(await browseWorkspace(nextRoot));
+    }
     setSnapshot(await fetchSnapshot(nextRoot || repositoryRoot));
+  }
+
+  async function browseDirectory(path?: string) {
+    setWorkspaceError(null);
+    const result = await browseWorkspace(path);
+    setWorkspaceBrowser(result);
+    const current = stringValue(result.current);
+    if (current) setRepositoryImportPath(current);
   }
 
   async function selectRepository(repositoryId: string) {
@@ -210,8 +297,8 @@ export default function ControlCenterPage() {
   }
 
   return (
-    <main className="min-h-screen bg-background px-4 py-4">
-      <div className="mx-auto flex max-w-[1800px] flex-col gap-5">
+    <main className="min-h-screen overflow-x-hidden bg-background px-4 py-4">
+      <div className="mx-auto flex max-w-[1800px] min-w-0 flex-col gap-5">
         <header className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-border bg-panel px-4 py-3">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-md bg-cyan-950 text-accent">
@@ -225,6 +312,9 @@ export default function ControlCenterPage() {
                 backend {health}
               </Badge>
               <span>{snapshot?.generated_at ? new Date(snapshot.generated_at).toLocaleTimeString() : "waiting"}</span>
+              <span>snapshot {apiStats.snapshotLatency}ms</span>
+              <span>health {apiStats.healthLatency}ms</span>
+              <span>last {apiStats.lastRefresh || "pending"}</span>
             </div>
             </div>
           </div>
@@ -242,13 +332,16 @@ export default function ControlCenterPage() {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[390px_minmax(620px,1fr)_430px]">
-          <section className="flex flex-col gap-5">
+        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)_400px]">
+          <section className="flex min-w-0 flex-col gap-5">
             <WorkspaceBrowser
               repositories={snapshot?.repositories ?? []}
               activeRepository={snapshot?.active_repository}
               importPath={repositoryImportPath}
               setImportPath={setRepositoryImportPath}
+              browser={workspaceBrowser}
+              browserError={workspaceError}
+              onBrowse={browseDirectory}
               onImport={importCurrentRepository}
               onSelect={selectRepository}
               onRefresh={refreshActiveRepository}
@@ -278,6 +371,7 @@ export default function ControlCenterPage() {
               plan={snapshot?.execution_plan}
             />
             <ArchitectureMemoryPanel memory={snapshot?.architecture_memory} compressed={snapshot?.compressed_context} />
+            <ProjectBrainPanel brain={snapshot?.project_brain} semantic={snapshot?.semantic_memory} />
             <ConvergencePanel convergence={snapshot?.convergence} />
             <RuntimeMonitor runtime={snapshot?.runtime} />
             <TestResults tests={snapshot?.tests} />
@@ -293,10 +387,16 @@ export default function ControlCenterPage() {
             />
           </section>
 
-          <section className="flex flex-col gap-5">
+          <section className="flex min-w-0 flex-col gap-5">
             <LiveCourtroom roles={snapshot?.courtroom ?? []} />
             <ExecutionTimeline timeline={snapshot?.timeline ?? []} />
             <TaskGraphPanel taskPlan={snapshot?.task_plan} executionGraph={snapshot?.execution_graph} />
+            <ContextAssemblyPanel
+              assembly={snapshot?.context_assembly}
+              repositoryRag={snapshot?.repository_rag}
+              knowledgeGraph={snapshot?.knowledge_graph}
+              adrs={snapshot?.adrs ?? []}
+            />
             <GitPanel
               git={snapshot?.git}
               commitMessage={commitMessage}
@@ -308,7 +408,7 @@ export default function ControlCenterPage() {
             <LogsPanel logs={snapshot?.logs ?? []} />
           </section>
 
-          <section className="flex flex-col gap-5">
+          <section className="flex min-w-0 flex-col gap-5">
             <ArtifactExplorer
               artifacts={filteredArtifacts}
               query={artifactQuery}
@@ -325,6 +425,7 @@ export default function ControlCenterPage() {
               onReplay={openReplay}
             />
             <ObjectiveMemoryPanel objectives={snapshot?.objective_memory ?? []} />
+            <ToolActivityPanel tools={snapshot?.tool_activity} />
             <RepositoryExplorer tree={tree} selectedFile={selectedFile} onOpenFile={openFile} />
             <ConversationView items={snapshot?.conversation ?? []} />
           </section>
@@ -339,22 +440,87 @@ function WorkspaceBrowser(props: {
   activeRepository?: Record<string, unknown> | null;
   importPath: string;
   setImportPath: (value: string) => void;
+  browser?: Record<string, unknown> | null;
+  browserError?: string | null;
+  onBrowse: (path?: string) => void;
   onImport: () => void;
   onSelect: (repositoryId: string) => void;
   onRefresh: () => void;
 }) {
+  const entries = Array.isArray(props.browser?.entries)
+    ? (props.browser.entries as Array<Record<string, unknown>>)
+    : [];
+  const roots = asList(props.browser?.roots);
+  const parent = stringValue(props.browser?.parent);
   return (
     <Card>
       <CardHeader title="Workspace Browser" action={<GitBranch size={18} className="text-accent" />}>
         {stringValue(props.activeRepository?.repository_name) || "no repository selected"}
       </CardHeader>
       <div className="space-y-3 p-4">
-        <div className="grid grid-cols-[1fr_auto] gap-2">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
           <Input value={props.importPath} onChange={(event) => props.setImportPath(event.target.value)} />
+          <Button variant="secondary" onClick={() => props.onBrowse(props.importPath)}>
+            <FolderOpen size={16} />
+            Browse
+          </Button>
           <Button variant="secondary" onClick={props.onImport}>
             <Archive size={16} />
             Import
           </Button>
+        </div>
+        {props.browserError ? (
+          <div className="rounded-md border border-red-900 bg-red-950 px-3 py-2 text-xs text-danger">
+            {props.browserError}
+          </div>
+        ) : null}
+        <div className="rounded-md border border-border bg-slate-950">
+          <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs">
+            <span className="truncate text-muted">{stringValue(props.browser?.current) || "Select a local path"}</span>
+            <div className="flex shrink-0 items-center gap-2">
+              {parent ? (
+                <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => props.onBrowse(parent)}>
+                  Up
+                </Button>
+              ) : null}
+              <Badge tone={props.browser?.valid_repository ? "success" : "neutral"}>
+                {props.browser?.valid_repository ? "valid" : "folder"}
+              </Badge>
+            </div>
+          </div>
+          {roots.length ? (
+            <div className="flex gap-2 overflow-x-auto border-b border-border px-3 py-2">
+              {roots.map((root) => (
+                <Button key={root} variant="ghost" className="h-7 shrink-0 px-2 text-xs" onClick={() => props.onBrowse(root)}>
+                  {root}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          <div className="max-h-48 overflow-auto">
+            {entries.length ? (
+              entries.map((entry) => {
+                const path = stringValue(entry.path);
+                return (
+                  <button
+                    key={path}
+                    className="block w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-900"
+                    onClick={() => path && props.onBrowse(path)}
+                  >
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <span className="truncate">{stringValue(entry.name)}</span>
+                      <Badge tone={entry.is_git_repository || entry.has_app_markers ? "accent" : "neutral"}>
+                        {entry.is_git_repository ? "git" : entry.has_app_markers ? "app" : "dir"}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted">{path}</div>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-3 py-2 text-sm text-muted">No child directories available.</div>
+            )}
+          </div>
         </div>
         <div className="max-h-44 overflow-auto rounded-md border border-border bg-slate-950">
           {props.repositories.length ? (
@@ -490,6 +656,112 @@ function ArchitectureMemoryPanel({
   );
 }
 
+function ProjectBrainPanel({
+  brain,
+  semantic
+}: {
+  brain?: Record<string, unknown> | null;
+  semantic?: Record<string, unknown> | null;
+}) {
+  const stats = objectValue(semantic?.stats);
+  const retrieved = Array.isArray(semantic?.retrieved)
+    ? (semantic.retrieved as Array<Record<string, unknown>>)
+    : [];
+  return (
+    <Card>
+      <CardHeader title="Project Brain" action={<Brain size={18} className="text-accent" />}>
+        {stringValue(brain?.updated_at) || "local memory pending"}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <p className="text-muted">
+          {asList(brain?.architecture_summaries).slice(-1)[0] || "No persisted project brain yet."}
+        </p>
+        <div className="grid gap-2 md:grid-cols-2">
+          <MiniList title="Decisions" items={asList(brain?.decisions)} />
+          <MiniList title="Successful Patterns" items={asList(brain?.successful_patterns)} />
+          <MiniList title="Failures" items={asList(brain?.failures)} />
+          <MiniList title="Repairs" items={asList(brain?.repairs)} />
+        </div>
+        <dl className="space-y-2">
+          <Metric label="semantic items" value={stats.items ?? 0} />
+          <Metric label="embedding" value={stats.embedding ?? "local"} />
+        </dl>
+        <MiniList title="Retrieved Memories" items={retrieved.map((item) => `${item.kind ?? ""}: ${item.text ?? ""}`)} />
+      </div>
+    </Card>
+  );
+}
+
+function ContextAssemblyPanel({
+  assembly,
+  repositoryRag,
+  knowledgeGraph,
+  adrs
+}: {
+  assembly?: Record<string, unknown> | null;
+  repositoryRag?: Record<string, unknown> | null;
+  knowledgeGraph?: Record<string, unknown> | null;
+  adrs: Array<Record<string, unknown>>;
+}) {
+  const usage = objectValue(assembly?.context_usage);
+  const ragHits = Array.isArray(repositoryRag?.hits) ? (repositoryRag.hits as Array<Record<string, unknown>>) : [];
+  const graphStats = objectValue(knowledgeGraph?.stats);
+  const nodes = Array.isArray(knowledgeGraph?.nodes) ? (knowledgeGraph.nodes as Array<Record<string, unknown>>) : [];
+  return (
+    <Card>
+      <CardHeader title="Context Assembly" action={<Network size={18} className="text-accent" />}>
+        {`${usage.selected_files ?? 0} files / ${usage.semantic_memories ?? 0} memories`}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <div className="grid gap-2 md:grid-cols-2">
+          <MiniList title="Selected Files" items={asList(assembly?.relevant_files)} />
+          <MiniList title="Repository RAG" items={ragHits.map((hit) => `${hit.path ?? ""} (${hit.score ?? 0})`)} />
+          <MiniList title="ADR Explorer" items={adrs.map((adr) => `${adr.title ?? ""}: ${adr.decision ?? ""}`)} />
+          <MiniList title="Knowledge Nodes" items={nodes.slice(0, 12).map((node) => `${node.kind ?? ""}: ${node.label ?? ""}`)} />
+        </div>
+        <dl className="space-y-2">
+          <Metric label="graph nodes" value={graphStats.nodes ?? 0} />
+          <Metric label="graph edges" value={graphStats.edges ?? 0} />
+          <Metric label="rag indexed" value={objectValue(repositoryRag?.index).indexed_files ?? 0} />
+        </dl>
+      </div>
+    </Card>
+  );
+}
+
+function ToolActivityPanel({ tools }: { tools?: Record<string, unknown> | null }) {
+  const activities = Array.isArray(tools?.activities)
+    ? (tools.activities as Array<Record<string, unknown>>)
+    : [];
+  return (
+    <Card>
+      <CardHeader title="Tool Activity" action={<Database size={18} className="text-accent" />}>
+        {activities.length ? `${activities.length} local calls` : "idle"}
+      </CardHeader>
+      <div className="space-y-3 p-4 text-sm">
+        <MiniList title="Local Tools" items={asList(tools?.tools)} />
+        <div className="max-h-44 overflow-auto rounded-md border border-border bg-slate-950">
+          {activities.length ? (
+            activities.slice(-10).map((activity, index) => (
+              <div key={index} className="border-b border-border px-3 py-2 text-xs last:border-b-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{stringValue(activity.tool)}</span>
+                  <Badge tone={activity.status === "ok" ? "success" : "danger"}>
+                    {stringValue(activity.status)}
+                  </Badge>
+                </div>
+                <div className="mt-1 text-muted">{stringValue(activity.action)}</div>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-xs text-muted">No local tool calls recorded.</div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function TaskGraphPanel({
   taskPlan,
   executionGraph
@@ -501,6 +773,8 @@ function TaskGraphPanel({
   const steps = Array.isArray(executionGraph?.steps) ? (executionGraph.steps as Array<Record<string, unknown>>) : [];
   const blocked = asList(executionGraph?.blocked);
   const completed = asList(executionGraph?.completed);
+  const failed = asList(executionGraph?.failed);
+  const running = stringValue(executionGraph?.running);
   return (
     <Card>
       <CardHeader title="Task Graph" action={<ListChecks size={18} className="text-accent" />}>
@@ -520,9 +794,16 @@ function TaskGraphPanel({
           ))}
         </div>
         <div className="grid gap-2 md:grid-cols-3">
-          <MiniList title="Execution Steps" items={steps.map((step) => `${step.kind ?? ""} ${step.step_id ?? ""}`)} />
+          <MiniList title="Execution Steps" items={steps.map((step) => {
+            const id = stringValue(step.step_id);
+            const status = stringValue(step.status) || "PENDING";
+            const duration = step.duration_ms != null ? ` ${step.duration_ms}ms` : "";
+            return `${status} ${step.kind ?? ""} ${id}${duration}`;
+          })} />
           <MiniList title="Completed" items={completed} />
+          <MiniList title={running ? `Running: ${running}` : "Running"} items={running ? [running] : []} />
           <MiniList title="Blocked" items={blocked} />
+          <MiniList title="Failed" items={failed} />
         </div>
       </div>
     </Card>
@@ -686,7 +967,7 @@ function CommandCenter(props: {
             className="h-4 w-4 accent-cyan-700"
           />
         </div>
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <Button onClick={props.onStart}>
             <Play size={16} />
             Run
@@ -1018,12 +1299,17 @@ function TreeNode({ node, onOpenFile }: { node: RepoTreeNode; onOpenFile: (path:
 }
 
 function RuntimeMonitor({ runtime }: { runtime?: Record<string, unknown> }) {
+  const diagnostics = (runtime?.diagnostics ?? {}) as Record<string, unknown>;
   return (
     <Card>
       <CardHeader title="Runtime Monitor" action={<Terminal size={18} className="text-accent" />} />
       <dl className="space-y-2 p-4 text-sm">
         <Metric label="active runtime" value={runtime?.active_runtime ?? "idle"} />
         <Metric label="model" value={runtime?.active_model ?? "none"} />
+        <Metric label="load status" value={diagnostics.load_status ?? "idle"} />
+        <Metric label="fallback" value={diagnostics.fallback_status ?? "none"} />
+        <Metric label="vram required" value={formatMegabytes(diagnostics.vram_required)} />
+        <Metric label="vram available" value={formatMegabytes(diagnostics.free_vram)} />
         <Metric label="pid" value={runtime?.pid ?? "pending"} />
         <Metric label="pgid" value={runtime?.pgid ?? "pending"} />
         <Metric label="swap count" value={runtime?.swap_count ?? "pending"} />
@@ -1098,6 +1384,10 @@ function formatVram(value: unknown) {
   const vram = value as Record<string, unknown>;
   if (!vram.available) return "unavailable";
   return `${vram.memory_used_mb} / ${vram.memory_total_mb} MB`;
+}
+
+function formatMegabytes(value: unknown) {
+  return typeof value === "number" ? `${value} MB` : "unknown";
 }
 
 function asList(value: unknown): string[] {

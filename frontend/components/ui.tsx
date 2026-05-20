@@ -8,7 +8,7 @@ export function Card({
   return (
     <section
       className={cn(
-        "rounded-md border border-border bg-panel shadow-lg shadow-black/15",
+        "min-w-0 overflow-hidden rounded-md border border-border bg-panel shadow-lg shadow-black/15",
         className
       )}
     >
@@ -27,9 +27,9 @@ export function CardHeader({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex min-h-12 items-start justify-between gap-3 border-b border-border px-4 py-3">
-      <div>
-        <h2 className="text-sm font-semibold tracking-normal">{title}</h2>
+    <div className="flex min-h-12 min-w-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
+      <div className="min-w-0">
+        <h2 className="truncate text-sm font-semibold tracking-normal">{title}</h2>
         {children ? <div className="mt-1 text-xs text-muted">{children}</div> : null}
       </div>
       {action}
@@ -47,7 +47,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
         variant === "primary" && "bg-accent text-white hover:brightness-95",
         variant === "secondary" && "border border-border bg-slate-900 hover:bg-slate-800",
         variant === "danger" && "bg-danger text-white hover:brightness-95",
@@ -64,7 +64,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={cn(
-        "h-9 w-full rounded-md border border-border bg-slate-950 px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
+        "h-9 min-w-0 w-full rounded-md border border-border bg-slate-950 px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
         props.className
       )}
     />
@@ -76,7 +76,7 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
     <textarea
       {...props}
       className={cn(
-        "min-h-24 w-full resize-y rounded-md border border-border bg-slate-950 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
+        "min-h-24 min-w-0 w-full resize-y rounded-md border border-border bg-slate-950 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20",
         props.className
       )}
     />

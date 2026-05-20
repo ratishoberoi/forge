@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.runtime.context_compressor import CompressedRepositoryContext
+from backend.runtime.json_store import atomic_write_json, load_json_store
 from backend.runtime.task_planner import TaskPlan
 
 
@@ -170,9 +171,7 @@ class ObjectiveMemory:
         return record
 
     def list_records(self, repository_path: str | None = None) -> list[ObjectiveMemoryRecord]:
-        if not self.path.exists():
-            return []
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = load_json_store(self.path, default={"objectives": []}, store_name="objective_memory")
         records = [ObjectiveMemoryRecord.from_dict(item) for item in data.get("objectives", [])]
         if repository_path:
             resolved = str(Path(repository_path).resolve())
@@ -180,9 +179,4 @@ class ObjectiveMemory:
         return sorted(records, key=lambda record: record.updated_at, reverse=True)
 
     def _save(self, records: list[ObjectiveMemoryRecord]) -> None:
-        tmp_path = self.path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps({"objectives": [record.to_dict() for record in records]}, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        tmp_path.replace(self.path)
+        atomic_write_json(self.path, {"objectives": [record.to_dict() for record in records]})

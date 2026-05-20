@@ -35,6 +35,8 @@ class RuntimeSwapEngine:
         self.telemetry = telemetry or print
         self.active_process: RuntimeProcess | None = None
         self.swap_history: list[RuntimeProcess] = []
+        if hasattr(self.launcher, "telemetry"):
+            self.launcher.telemetry = self.telemetry
 
     def swap(self, next_process: RuntimeProcess) -> RuntimeProcess:
         """
@@ -99,6 +101,8 @@ class RuntimeSwapEngine:
         last_error: Exception | None = None
         for attempt in range(1, self.max_launch_attempts + 1):
             try:
+                if hasattr(self.launcher, "telemetry"):
+                    self.launcher.telemetry = self.telemetry
                 self._emit(
                     f"[SWAP] launching {process.role} "
                     f"({process.model_name}) attempt {attempt}/"
