@@ -125,7 +125,7 @@ graph LR
     Precheck --> Profile[Launch Profile Selection]
     Profile --> VLLM[vLLM Server]
     VLLM --> Health[RuntimeHealth]
-    Health --> Models[/v1/models Registry]
+    Health --> Models["/v1/models Registry"]
     Models --> Ready[Model Ready]
     Ready --> Infer[OpenAI-Compatible Inference]
 ```
@@ -300,7 +300,7 @@ For large application objectives, Forge creates an acceptance contract before mo
 ```mermaid
 flowchart TD
     Start([Run Created]) --> Bind[Validate Repository Binding]
-    Bind --> Branch[Create forge/run Branch]
+    Bind --> Branch["Create forge/run Branch"]
     Branch --> Scan[REPOSITORY_SCAN]
     Scan --> Classify[Objective Classification]
     Classify --> Plan[PLANNING]
@@ -506,7 +506,7 @@ The judge cannot approve code with failing tests or unmet acceptance requirement
 graph TD
     Repo[Selected Repository] --> Status[Inspect Git Status]
     Status --> Branch{On main or master?}
-    Branch -- yes --> Create[Create forge/run-run_id Branch]
+    Branch -- yes --> Create["Create forge/run-run_id Branch"]
     Branch -- no --> Create
     Create --> Execute[Autonomous Execution]
     Execute --> Diff[Diff Intelligence]
@@ -526,9 +526,9 @@ Forge should never modify `main` or `master` directly during autonomous executio
 ```mermaid
 graph TD
     WorkspaceManager[WorkspaceManager] --> Registry[Repository Registry]
-    WorkspaceManager --> Workspaces[.forge/workspaces]
-    WorkspaceManager --> Benchmarks[.forge/benchmarks]
-    WorkspaceManager --> Sandboxes[.forge/sandboxes]
+    WorkspaceManager --> Workspaces[".forge/workspaces"]
+    WorkspaceManager --> Benchmarks[".forge/benchmarks"]
+    WorkspaceManager --> Sandboxes[".forge/sandboxes"]
 
     Registry --> RepoA[Repo A Metadata]
     Registry --> RepoB[Repo B Metadata]
