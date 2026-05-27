@@ -1,764 +1,489 @@
 # Forge
 
-Forge is a local-first autonomous software engineering platform. It is designed to inspect a repository, plan a change, execute code modifications, run validation, repair failures, and converge on a result while using local models and local infrastructure.
+**Local-first AI engineering infrastructure for autonomous repository work.**
 
-The core technical idea is simple to describe and difficult to build: Forge runs a multi-model engineering workflow on a single workstation GPU by loading exactly one vLLM runtime at a time, executing that model, shutting it down, and swapping to the next model. This allows a local machine to coordinate specialized coding, synthesis, and judging models without paying for cloud inference or requiring simultaneous multi-GPU serving.
+Forge scans a codebase, builds repository intelligence, routes work through specialist local models, writes structured artifacts, applies patches, runs validation, repairs failures, and converges on a result without depending on cloud inference.
 
-Forge is not a chat wrapper. It is an orchestration system for autonomous repository work.
+<p>
+  <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue">
+  <img alt="FastAPI" src="https://img.shields.io/badge/api-FastAPI-009688">
+  <img alt="vLLM" src="https://img.shields.io/badge/inference-vLLM-7c3aed">
+  <img alt="Qdrant" src="https://img.shields.io/badge/vector_store-Qdrant-dc244c">
+  <img alt="Tree-sitter" src="https://img.shields.io/badge/parsing-Tree--sitter-111827">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-73%20files-16a34a">
+</p>
 
----
+<img src="./frontend/screenshots/forge-control-center-1920.png" alt="Forge Control Center" width="100%">
 
-## 1. Executive Summary
+Forge is not a prompt wrapper. It is a systems project for local autonomous software engineering: inference lifecycle control, model routing, repository cognition, retrieval, artifacts, patch execution, validation, repair, Git safety, and an operator control plane.
 
-Modern autonomous coding systems are difficult because software engineering is not a single prompt problem. A real agent must:
+## Why Forge Exists
 
-- understand repository architecture
-- retrieve relevant context without flooding the model
-- plan across files
-- generate structured patches
-- write files safely
-- run tests and builds
-- diagnose failures
-- repair code
-- validate acceptance criteria
-- preserve Git safety
-- remember previous work
-- expose enough telemetry for an operator to trust the system
+Most AI coding systems hide the hard parts behind a hosted model endpoint. Forge works on the harder local systems problem:
 
-Forge tackles those problems as a local systems architecture. The system keeps inference, memory, repository indexing, telemetry, patch generation, and validation under operator control.
+- How do you coordinate multiple specialist coding models on one workstation GPU?
+- How do you give a model enough repository context without dumping the whole repo into a prompt?
+- How do you turn model output into structured, reviewable, testable patches?
+- How do you prevent a model from declaring success when tests or acceptance criteria fail?
+- How do you keep repository context, memory, artifacts, and inference inside infrastructure you control?
 
-The platform is built around three sequential courtroom roles:
+The central constraint is deliberate: **one active heavyweight model runtime at a time**. Forge swaps local vLLM runtimes through coder, synthesis, and judge stages so a single machine can run a multi-model engineering workflow without keeping every model resident in VRAM.
 
-- `PRIMARY_CODER` generates implementation artifacts.
-- `DEEPSEEK_SYNTH` critiques architecture and risk.
-- `JUDGE` validates whether the work should be accepted.
+## Core Capabilities
 
-The models do not run simultaneously. Forge uses a single active runtime and swaps models through a runtime lifecycle layer.
-
----
-
-## 2. Vision
-
-Forge exists to prove that autonomous software engineering can be local-first.
-
-Local-first means:
-
-- no OpenAI dependency
-- no Anthropic dependency
-- no Gemini dependency
-- no paid API requirement
-- no SaaS inference requirement
-- no cloud memory store requirement
-- no vendor-owned repository context
-
-The long-term goal is a workstation-deployable AI engineering agent that can work on real repositories with local models, local embeddings, local vector databases, local Git operations, and local validation.
-
-Forge aims at the gap between IDE assistant and autonomous engineering worker:
-
-- an IDE surface comparable to VSCode, Cursor, Claude Code, Codex, and Linear
-- an execution backend comparable to agentic systems such as OpenHands and Devin-style workflows
-- an inference strategy optimized for a single local GPU
-
----
-
-## 3. System Architecture
-
-Forge is organized as a set of cooperating systems rather than one monolithic agent. Each layer has a defined responsibility and produces inspectable artifacts.
-
-```mermaid
-graph TD
-    Operator[Operator Objective] --> Control[Control Center]
-    Control --> Workspace[Workspace Manager]
-    Workspace --> GitSafety[Git Safety Layer]
-    GitSafety --> Repository[Repository Execution Engine]
-
-    Repository --> Scan[Repository Scan]
-    Repository --> Intelligence[Repository Intelligence]
-    Repository --> Context[Context Assembly Engine]
-    Repository --> Planner[Task Planner]
-
-    Context --> Memory[Memory Systems]
-    Context --> RAG[Repository RAG]
-    Context --> Graph[Knowledge Graph]
-
-    Planner --> Courtroom[Autonomous Courtroom]
-    Courtroom --> RuntimeSwap[Runtime Swap Engine]
-    RuntimeSwap --> Launcher[Runtime Launcher]
-    RuntimeSwap --> Shutdown[Runtime Shutdown]
-    Launcher --> VLLM[vLLM OpenAI-Compatible Runtime]
-
-    Courtroom --> Artifacts[Artifact Store]
-    Artifacts --> Patch[Patch Writer]
-    Patch --> Tests[Test Execution]
-    Tests --> Repair[Autonomous Repair]
-    Repair --> Courtroom
-    Tests --> Judge[JUDGE Validation]
-    Judge --> Report[Release Report]
-    Report --> RunHistory[Run History]
-```
-
-### Architecture Principles
-
-- The backend architecture is preserved as explicit subsystems.
-- Runtime orchestration is separated from cognition.
-- Repository intelligence is computed before coding.
-- Memory augments context but never replaces the active objective.
-- Patches are generated as structured artifacts, not free-form prose.
-- Validation gates determine whether a run can converge.
-- Git isolation protects real repositories.
-
----
-
-## 4. Runtime Architecture
-
-Forge serves local models through vLLM OpenAI-compatible servers. Only one model runtime is active at a time.
-
-```mermaid
-graph LR
-    Engine[Autonomous Run] --> Swap[RuntimeSwapEngine]
-    Swap --> Active{Active Runtime?}
-    Active -- yes --> Stop[RuntimeShutdown]
-    Stop --> Cleanup[Process Group Cleanup]
-    Cleanup --> Launch[RuntimeLauncher]
-    Active -- no --> Launch
-    Launch --> Precheck[VRAM Precheck]
-    Precheck --> Profile[Launch Profile Selection]
-    Profile --> VLLM[vLLM Server]
-    VLLM --> Health[RuntimeHealth]
-    Health --> Models["/v1/models Registry"]
-    Models --> Ready[Model Ready]
-    Ready --> Infer[OpenAI-Compatible Inference]
-```
-
-Runtime components:
-
-| Component | Responsibility |
+| Area | What Forge Implements |
 | --- | --- |
-| `RuntimeProcess` | Stores role, model name, model path, port, pid, pgid, and lifecycle state |
-| `RuntimeLauncher` | Starts vLLM with preflight VRAM checks and fallback launch profiles |
-| `RuntimeHealth` | Verifies readiness using valid `/v1/models` registry data |
-| `RuntimeShutdown` | Terminates API server, EngineCore, CUDA workers, and process groups |
-| `RuntimeSwapEngine` | Coordinates sequential runtime transitions |
-| `LocalInference` | Sends OpenAI-compatible chat completion requests |
+| Local inference | vLLM-backed OpenAI-compatible chat completions and streaming responses |
+| Runtime orchestration | Sequential runtime swap, launch, health checks, process metadata, shutdown, and process-group cleanup |
+| Model routing | Role-aware model registry for coder, synthesizer, retry, architecture, and judge roles |
+| Repository intelligence | Scanner, Tree-sitter AST parsing, symbol graph, AST-aware chunking, embeddings, Qdrant, BM25, hybrid retrieval |
+| Context engineering | Priority-based context assembly and token-budget trimming |
+| Agent workflow | Courtroom pipeline with `PRIMARY_CODER`, `DEEPSEEK_SYNTH`, and `JUDGE` stages |
+| Patch execution | Patch parsing, file writing, sandboxing primitives, pytest execution, failure feedback, repair loops |
+| Validation | Patch validation, test gates, acceptance checks, convergence decisions, execution-aware judging |
+| Git safety | Status, diff, staged diff, changed files, untracked files, branch/worktree abstractions |
+| Observability | Structured runtime artifacts, run history, logs, request tracing, replay and artifact summary modules |
 
----
+## Current Codebase
 
-## 5. Autoswap Architecture
+Forge is a Python 3.12 backend with a tracked Control Center screenshot and local model assets.
 
-The core constraint is a single GPU. Running three large models at once would exceed VRAM. Forge solves that by treating model execution as a staged runtime pipeline.
+| Surface | Evidence |
+| --- | --- |
+| Backend | `backend/` contains 172 Python files and about 14.5k LOC |
+| Tests | `tests/` contains 73 test files covering runtime, retrieval, orchestration, patches, validation, and GitOps |
+| API | `backend/app.py`, `backend/api/routes/chat.py`, `backend/api/schemas/chat.py` |
+| Runtime | `backend/runtime/runtime_launcher.py`, `runtime_shutdown.py`, `runtime_swap_engine.py`, `runtime_process.py` |
+| Repo intelligence | `backend/repointel/service.py`, `scanner.py`, `ast/parser.py`, `retrieval.py`, `vector_store.py`, `graph.py` |
+| Benchmarks | `benchmarks/repointel_benchmark.py`, `benchmarks/multi_agent_runtime_benchmark.py` |
+| Config | `.env.example`, `backend/config/settings.py` |
+| Operator UI asset | `frontend/screenshots/forge-control-center-1920.png` |
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Run as AutonomousRun
-    participant Swap as RuntimeSwapEngine
-    participant Launcher as RuntimeLauncher
-    participant Health as RuntimeHealth
-    participant VLLM as vLLM Runtime
-    participant GPU as Single GPU
-
-    Run->>Swap: activate PRIMARY_CODER
-    Swap->>Launcher: launch qwen-primary
-    Launcher->>GPU: allocate VRAM
-    Launcher->>VLLM: start OpenAI server
-    Health->>VLLM: GET /v1/models
-    VLLM-->>Health: valid model registry
-    Run->>VLLM: POST /v1/chat/completions
-    VLLM-->>Run: PRIMARY_CODER JSON
-    Run->>Swap: shutdown PRIMARY_CODER
-    Swap->>GPU: release VRAM
-
-    Run->>Swap: activate DEEPSEEK_SYNTH
-    Swap->>Launcher: launch deepseek-synth
-    Run->>VLLM: synth inference
-    VLLM-->>Run: critique JSON
-    Run->>Swap: shutdown DEEPSEEK_SYNTH
-
-    Run->>Swap: activate JUDGE
-    Swap->>Launcher: launch qwen-judge
-    Run->>VLLM: judge inference
-    VLLM-->>Run: verdict JSON
-    Run->>Swap: shutdown JUDGE
-```
-
-Why this is hard:
-
-- runtime startup latency must not break orchestration state
-- port conflicts must be detected and recovered
-- readiness must not race server boot
-- CUDA workers must be cleaned up reliably
-- launch profiles must adapt to available VRAM
-- model context limits must be reflected in prompt budgeting
-- inference errors must not leave stale runtimes behind
-
----
-
-## 6. Courtroom Architecture
-
-Forge uses a courtroom-style cognition model. Each role has a distinct function, output contract, and validation responsibility.
-
-```mermaid
-graph TD
-    Objective[Active Objective] --> CoderPrompt[Coder Prompt]
-    Context[Assembled Context] --> CoderPrompt
-    Plan[Execution Plan] --> CoderPrompt
-
-    CoderPrompt --> Primary[PRIMARY_CODER]
-    Primary --> CoderJSON[Implementation JSON]
-    CoderJSON --> SynthPrompt[Synthesis Prompt]
-
-    SynthPrompt --> DeepSeek[DEEPSEEK_SYNTH]
-    DeepSeek --> SynthJSON[Critique JSON]
-    SynthJSON --> JudgePrompt[Judge Prompt]
-    CoderJSON --> JudgePrompt
-    Tests[Test Results] --> JudgePrompt
-    RepairHistory[Repair History] --> JudgePrompt
-
-    JudgePrompt --> Judge[JUDGE]
-    Judge --> Verdict[Verdict JSON]
-    Verdict --> Gate{Approved and Tests Passing?}
-    Gate -- yes --> Converged[Converged]
-    Gate -- no --> Repair[Repair Loop]
-```
-
-### Role Responsibilities
-
-| Role | Purpose | Strength | Weakness Controlled By |
-| --- | --- | --- | --- |
-| `PRIMARY_CODER` | Writes implementation artifacts and full file contents | Code synthesis and feature construction | schema validation, patch validation, tests |
-| `DEEPSEEK_SYNTH` | Reviews design, risks, and recommended changes | Architectural critique and second-pass reasoning | structured output contract |
-| `JUDGE` | Approves or rejects based on patch, tests, acceptance, and repair history | Final validation and convergence decision | cannot approve failing tests |
-
-Forge intentionally does not collapse these roles into one model. Multiple specialized passes reduce false positives, add architectural critique, and create explicit validation boundaries.
-
----
-
-## 7. Multi-Agent Model Interaction Flow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Planner as TaskPlanner
-    participant Coder as PRIMARY_CODER
-    participant Synth as DEEPSEEK_SYNTH
-    participant Judge as JUDGE
-    participant Patch as Patch Writer
-    participant Tests as Test Runner
-
-    Planner->>Coder: objective + plan + targeted context
-    Coder-->>Patch: {"summary", "files"}
-    Patch->>Tests: apply files and run commands
-    Tests-->>Synth: failures, patch, context
-    Synth-->>Judge: critique, risks, changes
-    Judge->>Judge: verify tests and acceptance
-    Judge-->>Planner: approved or required changes
-```
-
-Each model is required to emit structured JSON. Forge validates, recovers, retries, and rejects malformed outputs rather than treating arbitrary text as executable state.
-
----
-
-## 8. Repository Intelligence
-
-Repository intelligence runs before coding. Forge must understand the target repository before it asks a model to modify it.
-
-```mermaid
-graph TD
-    Repo[Repository Root] --> Scan[Repository Scan]
-    Scan --> Lang[Language Detection]
-    Scan --> Framework[Framework Detection]
-    Scan --> Package[Package Manager Detection]
-    Scan --> Tests[Test Framework Detection]
-    Scan --> Entrypoints[Entrypoint Discovery]
-    Scan --> Build[Build Command Discovery]
-
-    Lang --> Summary[Repository Intelligence Summary]
-    Framework --> Summary
-    Package --> Summary
-    Tests --> Summary
-    Entrypoints --> Summary
-    Build --> Summary
-
-    Summary --> Context[Context Builder]
-    Summary --> Planner[Execution Planner]
-    Summary --> Memory[Architecture Memory Update]
-```
-
-Forge detects and plans for:
-
-- Python: FastAPI, Flask, Django
-- Frontend: React, Next.js, Vite
-- General: Docker, PostgreSQL, SQLite
-- Tests: pytest, npm test, builds, lint, type checks where discovered
-
-For large application objectives, Forge creates an acceptance contract before model execution. For example, a FastAPI Todo application requires routes, models, schemas, persistence, tests, dependencies, README, and Docker assets.
-
----
-
-## 9. Execution Pipeline
+## Architecture Overview
 
 ```mermaid
 flowchart TD
-    Start([Run Created]) --> Bind[Validate Repository Binding]
-    Bind --> Branch["Create forge/run Branch"]
-    Branch --> Scan[REPOSITORY_SCAN]
-    Scan --> Classify[Objective Classification]
-    Classify --> Plan[PLANNING]
-    Plan --> ValidatePlan{Plan Valid?}
-    ValidatePlan -- no --> Failed[FAILED]
-    ValidatePlan -- yes --> Coder[CODER]
-    Coder --> Patch[PATCH]
-    Patch --> Tests[TESTS]
-    Tests --> Pass{Tests Pass?}
-    Pass -- yes --> Judge[JUDGE]
-    Pass -- no --> Failure[FAILURE_ANALYSIS]
-    Failure --> Repair[REPAIR]
-    Repair --> Tests
-    Judge --> Approved{Approved?}
-    Approved -- yes --> Converged[CONVERGED]
-    Approved -- no --> Repair
+    Operator[Operator Objective] --> Control[Forge Control Center]
+    Control --> API[FastAPI Gateway]
+    API --> Runtime[Multi-Agent Runtime]
+    API --> RepoIntel[Repository Intelligence Engine]
+    API --> Chat[OpenAI-Compatible Chat API]
+
+    RepoIntel --> Scanner[Repository Scanner]
+    Scanner --> Parser[Tree-sitter Parser]
+    Parser --> Graph[Symbol Graph]
+    Parser --> Chunker[AST-Aware Chunker]
+    Chunker --> Embeddings[Sentence-Transformer Embeddings]
+    Embeddings --> Qdrant[Local Qdrant Vector Store]
+    Chunker --> BM25[BM25 Lexical Index]
+    Qdrant --> Retrieval[Hybrid Retrieval]
+    BM25 --> Retrieval
+    Graph --> Context[Context Builder]
+    Retrieval --> Context
+
+    Runtime --> Courtroom[Autonomous Courtroom]
+    Courtroom --> Swap[Runtime Swap Engine]
+    Swap --> VLLM[vLLM OpenAI-Compatible Runtime]
+    Courtroom --> Artifacts[Artifact Store]
+    Artifacts --> Patch[Patch Parser and Writer]
+    Patch --> Validation[Tests and Validation]
+    Validation --> Repair[Repair Loop]
+    Repair --> Courtroom
+    Validation --> Git[Git Diff and Review]
 ```
 
-Execution phases are exposed to the Control Center so the operator can see exactly what Forge is doing.
+Design principles:
 
----
+- Runtime lifecycle is separate from cognition.
+- Repository intelligence is built before code generation.
+- Context is assembled under a budget, not blindly appended.
+- Model output is persisted as artifacts before it becomes code.
+- Tests and acceptance gates drive convergence.
+- Git state remains inspectable before commit or rollback.
 
-## 10. Memory System
+## System Design
 
-Forge uses memory to support long-horizon engineering work without sending the entire repository to every prompt.
+Forge is organized as cooperating subsystems rather than a single agent loop.
 
-```mermaid
-graph TD
-    Run[Completed or Failed Run] --> Brain[ProjectBrain]
-    Run --> Objective[ObjectiveMemory]
-    Run --> Architecture[ArchitectureMemory]
-    Run --> Semantic[SemanticMemory]
-    Repo[Repository Files] --> RAG[Repository RAG]
-    Repo --> Graph[Knowledge Graph]
-    Decisions[Architectural Decisions] --> ADR[ADR Store]
+| Subsystem | Primary Files | Responsibility |
+| --- | --- | --- |
+| API gateway | `backend/app.py`, `backend/api/routes/chat.py` | FastAPI app, health checks, OpenAI-compatible chat route |
+| LLM service | `backend/llm/service.py`, `engine.py`, `prompting.py`, `decoding.py` | Prompt rendering, vLLM generation, streaming, usage accounting |
+| Model registry/router | `backend/llm/registry.py`, `router.py` | Role-to-model registration and generation dispatch |
+| Runtime lifecycle | `backend/runtime/runtime_*` | Launch, health, swap, shutdown, runtime metadata |
+| Courtroom runtime | `backend/runtime/autonomous_courtroom.py`, `convergence_loop.py` | Multi-role reasoning and convergence |
+| Repository intelligence | `backend/repointel/*` | Scan, parse, chunk, embed, retrieve, plan |
+| Patch and execution | `backend/runtime/patch_*`, `execution_*`, `pytest_runner.py` | Parse model output, write files, run commands, classify failures |
+| Artifacts and replay | `backend/runtime/artifact_*`, `replay_context.py` | Persist, load, summarize, compress, replay model artifacts |
+| Git operations | `backend/runtime/gitops.py`, `git_diff.py`, `worktrees.py` | Status, diffs, staging, worktree/repository safety |
 
-    Brain --> Assembly[ContextAssemblyEngine]
-    Objective --> Assembly
-    Architecture --> Assembly
-    Semantic --> Assembly
-    RAG --> Assembly
-    Graph --> Assembly
-    ADR --> Assembly
+## Model Routing Pipeline
 
-    Assembly --> Prompt[High-Value Prompt Context]
-```
-
-Memory systems:
-
-- `ProjectBrain`: summaries, decisions, tradeoffs, successful patterns, failures, repairs
-- `ArchitectureMemory`: service boundaries, important modules, dependency summaries
-- `ObjectiveMemory`: prior objectives, plans, outcomes, failures, repairs
-- `SemanticMemory`: local retrieval over previous work and repository knowledge
-- `RepositoryRAG`: local repository file retrieval
-- `KnowledgeGraph`: nodes and relationships for modules, tests, APIs, entities, services
-- `ADRStore`: architectural decision records
-- `ContextAssemblyEngine`: combines active objective, plan, files, memory, and graph context under a token budget
-
-Memory can inform a run, but it must not replace the active objective. The current objective is always the highest-priority context.
-
----
-
-## 11. Context Assembly Pipeline
+Forge can use local models for different engineering responsibilities instead of forcing one model to be coder, reviewer, repair engine, and judge.
 
 ```mermaid
 flowchart LR
-    Objective[Active Objective] --> Priority[Context Priority Queue]
-    Plan[Execution Plan] --> Priority
-    Files[Directly Affected Files] --> Priority
-    Tests[Related Tests] --> Priority
-    Arch[Architecture Memory] --> Priority
-    Semantic[Semantic Memory] --> Priority
-    Graph[Knowledge Graph] --> Priority
-    History[Old Run History] --> Priority
+    Objective[Objective] --> Router[Model Router]
+    Router --> Coder[primary_coder]
+    Router --> Synth[repo_synthesizer]
+    Router --> Retry[retry_engine]
+    Router --> Architect[architecture_coder]
+    Router --> Judge[judge]
 
-    Priority --> Budget[Token Budget Manager]
-    Budget --> Trim{Over Context Window?}
-    Trim -- yes --> DropLow[Drop Low-Priority Chunks]
-    DropLow --> Budget
-    Trim -- no --> Prompt[Model Prompt]
+    Coder --> ArtifactA[Implementation Artifact]
+    Synth --> ArtifactB[Risk and Design Critique]
+    Retry --> ArtifactC[Repair Proposal]
+    Architect --> ArtifactD[Architecture-Aware Patch]
+    Judge --> Verdict[Acceptance Verdict]
 ```
 
-Context engineering is a first-class system because local models often have smaller context windows than cloud frontier models. Forge prioritizes:
+The canonical courtroom path currently uses:
 
-1. active objective
-2. execution plan
-3. directly affected files
-4. related tests
-5. architecture memory
-6. semantic memory
-7. knowledge graph
-8. old run history
+- `PRIMARY_CODER`: implementation artifact generation.
+- `DEEPSEEK_SYNTH`: architecture and risk critique.
+- `JUDGE`: convergence and acceptance decision.
 
----
+## Single-GPU Runtime Autoswap
 
-## 12. Knowledge Graph Architecture
+Forge's runtime strategy is built for a workstation constraint: multiple large models, one active GPU runtime.
 
 ```mermaid
-graph LR
-    Files[Files] --> Modules[Modules]
-    Modules --> Services[Services]
-    Services --> Features[Features]
-    Tests[Tests] --> Features
-    APIs[APIs] --> Services
-    DB[Database Entities] --> Services
+sequenceDiagram
+    autonumber
+    participant Run as Autonomous Run
+    participant Swap as Runtime Swap Engine
+    participant Launch as Runtime Launcher
+    participant Health as Runtime Health
+    participant VLLM as vLLM Server
+    participant GPU as Single GPU
 
-    Modules -- depends_on --> Modules
-    Tests -- tests --> Files
-    Features -- implements --> APIs
-    Services -- owns --> Files
-    APIs -- uses --> DB
+    Run->>Swap: activate PRIMARY_CODER
+    Swap->>Launch: launch qwen-primary
+    Launch->>GPU: allocate VRAM
+    Health->>VLLM: wait for readiness
+    Run->>VLLM: chat completion
+    VLLM-->>Run: coder artifact
+    Run->>Swap: shutdown active runtime
+    Swap->>GPU: release VRAM
 
-    GraphStore[Local Graph Store] --> Retrieval[Graph Retrieval]
-    Retrieval --> Context[Context Assembly]
+    Run->>Swap: activate DEEPSEEK_SYNTH
+    Swap->>Launch: launch deepseek-synth
+    Health->>VLLM: wait for readiness
+    Run->>VLLM: critique artifact
+    Run->>Swap: shutdown active runtime
+
+    Run->>Swap: activate JUDGE
+    Swap->>Launch: launch qwen-judge
+    Health->>VLLM: wait for readiness
+    Run->>VLLM: verdict artifact
+    Run->>Swap: shutdown active runtime
 ```
 
-The graph allows Forge to reason beyond isolated files. If File A imports File B and tests depend on both, context expansion can include the right dependencies without flooding the prompt.
+Runtime primitives:
 
----
+- `RuntimeProcess`: role, model path, served model name, port, PID, PGID, launch state.
+- `RuntimeLauncher`: starts a vLLM OpenAI-compatible server and writes role-specific logs.
+- `RuntimeShutdown`: terminates the whole process group so child CUDA workers are cleaned up.
+- `RuntimeSwapEngine`: guarantees shutdown-before-launch and preserves swap history.
+- `LocalInference`: calls the active local OpenAI-compatible endpoint and normalizes model output.
 
-## 13. Autonomous Repair Loop
-
-```mermaid
-stateDiagram-v2
-    [*] --> PatchApplied
-    PatchApplied --> TestExecution
-    TestExecution --> Passed: return_code == 0
-    TestExecution --> FailureClassification: return_code != 0
-    FailureClassification --> RepairContext
-    RepairContext --> RepairPatch
-    RepairPatch --> PatchApplied
-    Passed --> JudgeValidation
-    JudgeValidation --> Converged: approved
-    JudgeValidation --> RepairContext: required changes
-    FailureClassification --> MaxRepairLimit: repair_count exhausted
-    MaxRepairLimit --> Failed
-    Converged --> [*]
-    Failed --> [*]
-```
-
-Failure classification captures:
-
-- `SyntaxError`
-- `ImportError`
-- `ModuleNotFoundError`
-- `AssertionError`
-- `TypeError`
-- `RuntimeError`
-- test failure
-- build failure
-- lint failure
-
-Repair context includes only relevant failure data:
-
-- failing file
-- traceback
-- failing test
-- last coder artifact
-- last synth artifact
-- targeted repository context
-
----
-
-## 14. Validation Pipeline
+## Request Lifecycle
 
 ```mermaid
 flowchart TD
-    Patch[Applied Patch] --> Build[BuildValidator]
-    Patch --> Tests[Test Execution]
-    Patch --> Acceptance[AcceptanceValidator]
-    Patch --> Visual[Visual Validator]
-    Patch --> Quality[QualityScore]
-
-    Build --> Gate{All Required Gates Pass?}
-    Tests --> Gate
-    Acceptance --> Gate
-    Visual --> Gate
-    Quality --> Gate
-
-    Gate -- yes --> Judge[JUDGE May Approve]
-    Gate -- no --> Reject[JUDGE Must Reject]
-    Reject --> Repair[Repair Loop]
+    A[Create Objective] --> B[Bind Repository]
+    B --> C[Scan Repository]
+    C --> D[Parse AST and Build Symbol Graph]
+    D --> E[Index Chunks in Qdrant and BM25]
+    E --> F[Build Context Package]
+    F --> G[Plan Execution]
+    G --> H[Run PRIMARY_CODER]
+    H --> I[Persist Artifact]
+    I --> J[Run DEEPSEEK_SYNTH]
+    J --> K[Persist Critique]
+    K --> L[Run JUDGE]
+    L --> M{Accepted?}
+    M -- no --> N[Repair or Refine Objective]
+    N --> H
+    M -- yes --> O[Parse Patch]
+    O --> P[Write Files]
+    P --> Q[Run Tests]
+    Q --> R{Validation Passes?}
+    R -- no --> N
+    R -- yes --> S[Show Diff and Artifacts]
 ```
 
-Validation checks include:
+## Repository Intelligence Pipeline
 
-- objective satisfaction
-- tests passing
-- build passing
-- required files created
-- required routes created
-- required APIs created
-- placeholder detection
-- documentation and maintainability scoring
-
-The judge cannot approve code with failing tests or unmet acceptance requirements.
-
----
-
-## 15. Git Safety Pipeline
+Forge builds local repository intelligence before prompting the coding model.
 
 ```mermaid
-graph TD
-    Repo[Selected Repository] --> Status[Inspect Git Status]
-    Status --> Branch{On main or master?}
-    Branch -- yes --> Create["Create forge/run-run_id Branch"]
-    Branch -- no --> Create
-    Create --> Execute[Autonomous Execution]
-    Execute --> Diff[Diff Intelligence]
-    Diff --> Review[Operator Review]
-    Review --> Commit[Commit Changes]
-    Review --> Rollback[Rollback or Revert]
-    Commit --> History[Run History]
-    Rollback --> History
+flowchart LR
+    Repo[Repository Root] --> Scan[Scanner]
+    Scan --> Ignore[Gitignore and Ignore Rules]
+    Ignore --> Files[RepoFile Manifest]
+    Files --> AST[Tree-sitter AST]
+    AST --> Symbols[Symbol Extraction]
+    AST --> Chunks[AST-Aware Chunks]
+    Symbols --> Graph[Symbol Graph]
+    Chunks --> Embed[Embedding Service]
+    Embed --> Vector[Qdrant Vector Store]
+    Chunks --> Lexical[BM25 Index]
+    Vector --> Hybrid[Hybrid Retrieval]
+    Lexical --> Hybrid
+    Graph --> Context[Context Builder]
+    Hybrid --> Context
+    Context --> Plan[Planning Layer]
 ```
 
-Forge should never modify `main` or `master` directly during autonomous execution. Every run is attached to a run id, branch, patch set, artifacts, test results, and report.
+Implemented repository intelligence components:
 
----
+- `RepositoryScanner`: file discovery, ignore handling, incremental manifest.
+- `TreeSitterAstEngine`: Python, JavaScript, TypeScript, Go, Rust parser support through Tree-sitter packages.
+- `SymbolGraphEngine`: file and symbol relationships.
+- `AstAwareChunker`: symbol-aware context chunks.
+- `EmbeddingService`: local sentence-transformer embeddings.
+- `QdrantVectorStore`: local persisted vector collections.
+- `BM25Index`: lexical search for exact code terms.
+- `HybridRetrievalEngine`: vector + lexical + overlap reranking.
+- `ContextBuilder` and `PlanningLayer`: context packaging and execution planning.
 
-## 16. Workspace and Isolation Model
+## Agent Execution Pipeline
 
 ```mermaid
-graph TD
-    WorkspaceManager[WorkspaceManager] --> Registry[Repository Registry]
-    WorkspaceManager --> Workspaces[".forge/workspaces"]
-    WorkspaceManager --> Benchmarks[".forge/benchmarks"]
-    WorkspaceManager --> Sandboxes[".forge/sandboxes"]
+flowchart TD
+    Objective[Objective] --> Context[Repository Context]
+    Context --> CoderPrompt[Coder Prompt]
+    CoderPrompt --> Coder[PRIMARY_CODER]
+    Coder --> CoderArtifact[Coder Artifact]
 
-    Registry --> RepoA[Repo A Metadata]
-    Registry --> RepoB[Repo B Metadata]
-    Registry --> RepoC[Repo C Metadata]
+    CoderArtifact --> SynthPrompt[Synthesis Prompt]
+    SynthPrompt --> Synth[DEEPSEEK_SYNTH]
+    Synth --> Critique[Critique Artifact]
 
-    RepoA --> MemoryA[Repo A Memory]
-    RepoB --> MemoryB[Repo B Memory]
-    RepoC --> MemoryC[Repo C Memory]
+    CoderArtifact --> JudgePrompt[Judge Prompt]
+    Critique --> JudgePrompt
+    Tests[Test and Repair History] --> JudgePrompt
+    JudgePrompt --> Judge[JUDGE]
+    Judge --> Verdict{Converged?}
 
-    MemoryA -. isolated .- MemoryB
-    MemoryB -. isolated .- MemoryC
+    Verdict -- no --> Refine[Refined Objective]
+    Refine --> CoderPrompt
+    Verdict -- yes --> Patch[Patch Parser and Writer]
+    Patch --> Validation[Validation Gates]
 ```
 
-Benchmarks, validation projects, generated applications, and autonomous trials are expected to run in disposable managed workspaces. Forge itself should only be modified when it is explicitly selected as the target repository.
+Each role produces inspectable artifacts. Forge can replay, summarize, compress, merge, and query artifacts instead of relying on hidden chain state.
 
----
+## OpenAI-Compatible API
 
-## 17. End-to-End Request Lifecycle
+Forge exposes a local chat completion route:
 
-```mermaid
-journey
-    title Forge Autonomous Engineering Run
-    section Operator
-      Select repository: 5: Operator
-      Enter objective: 5: Operator
-      Watch execution: 4: Operator
-      Review patch: 5: Operator
-      Commit or rollback: 5: Operator
-    section Forge
-      Bind workspace: 4: Forge
-      Scan repository: 5: Forge
-      Assemble context: 5: Forge
-      Swap runtimes: 3: Forge
-      Generate code: 4: Forge
-      Run tests: 5: Forge
-      Repair failures: 4: Forge
-      Judge result: 5: Forge
+```http
+POST /v1/chat/completions
 ```
 
----
+Supported request fields include:
 
-## 18. Local AI Economics
+- `model`
+- `request_id`
+- `agent_id`
+- `messages`
+- `temperature`
+- `max_tokens`
+- `top_p`
+- `stream`
 
-### Why Local AI Matters
+The API validates request shape with Pydantic and supports both JSON responses and SSE streaming.
 
-Cloud AI coding tools are powerful, but they create recurring costs and external dependencies:
+Example:
 
-- token-based inference cost
-- per-seat SaaS pricing
-- vendor-owned memory and context
-- network dependency
-- limited control over inference lifecycle
-- risk of repository context leaving local infrastructure
-- lock-in to one model provider
-
-Forge demonstrates a different operating model:
-
-- own the inference runtime
-- own the memory stores
-- own repository context
-- own orchestration
-- own telemetry
-- own Git safety
-- own validation
-
-The economic argument is not that local inference is free. GPUs, power, storage, and engineering time cost money. The argument is that organizations can convert recurring variable cloud inference cost into controlled local infrastructure while keeping sensitive engineering context inside their environment.
-
-```mermaid
-quadrantChart
-    title AI Engineering Operating Models
-    x-axis Low Local Control --> High Local Control
-    y-axis Low Recurring Cost --> High Recurring Cost
-    quadrant-1 Local Strategic Infrastructure
-    quadrant-2 Expensive Controlled Infrastructure
-    quadrant-3 Low Capability Scripts
-    quadrant-4 SaaS Agent Dependency
-    "Cloud API Coding Agent": [0.25, 0.82]
-    "IDE Autocomplete": [0.35, 0.45]
-    "Manual Scripts": [0.18, 0.18]
-    "Forge Local Runtime": [0.86, 0.34]
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "deepseek-coder",
+    "messages": [{"role": "user", "content": "Explain this repository"}],
+    "temperature": 0.2
+  }'
 ```
 
----
+## Deployment Options
 
-## 19. Engineering Challenges Solved
+Current supported path: local workstation.
 
-Forge exists because the hard parts are not the UI and not one model call. The hard parts are operational.
+Requirements:
 
-| Challenge | Forge System |
+- Python 3.12.
+- CUDA-capable machine for vLLM-backed local inference.
+- Local model directories or Hugging Face model access.
+- Enough disk for model weights and local vector indexes.
+
+Install:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env
+```
+
+Run API:
+
+```bash
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+Run tests:
+
+```bash
+pytest -q
+```
+
+Run repository intelligence benchmark:
+
+```bash
+python benchmarks/repointel_benchmark.py /path/to/repo "authentication flow"
+```
+
+Run multi-agent runtime benchmark:
+
+```bash
+python benchmarks/multi_agent_runtime_benchmark.py --task-count 10
+```
+
+Current repository does not include Docker, Compose, or Kubernetes deployment assets. Those are roadmap items, not current README claims.
+
+## Production-Oriented Features
+
+Forge is not presented as a managed SaaS. It is a local infrastructure codebase with production-oriented primitives:
+
+- Explicit runtime process metadata and lifecycle state.
+- Process-group shutdown for vLLM child workers.
+- Pydantic API validation with forbidden extra fields.
+- Structured request tracing and usage accounting.
+- Local Qdrant persistence for retrieval state.
+- Repository-scoped ignore rules and incremental index state.
+- Patch validation before writing.
+- Pytest execution inside a controlled working directory.
+- Git status, diff, staged diff, changed files, and untracked files APIs.
+- Artifact persistence, replay, compression, and summary modules.
+- Convergence, retry, recovery, and repair abstractions.
+- Broad test suite across runtime, repository intelligence, orchestration, patches, validation, artifacts, and GitOps.
+
+## Performance Characteristics
+
+Forge is designed around controllable local performance rather than hosted API throughput.
+
+| Characteristic | Implementation |
 | --- | --- |
-| Single GPU cannot hold all models | Sequential runtime autoswap |
-| vLLM readiness races | RuntimeHealth checks `/v1/models` |
-| Port conflicts | Runtime launch port checks and dynamic reassignment |
-| Orphan CUDA workers | Process group shutdown |
-| Context overflow | Context budget manager and priority trimming |
-| Stale objective contamination | active objective priority and classifier telemetry |
-| Cross-repository memory leakage | repository-scoped memory and RAG |
-| Malformed model output | strict schema validation, JSON recovery, retries |
-| False positive completion | acceptance contracts and judge hardening |
-| Corrupt memory files | quarantine and rebuild recovery |
-| Real repository safety | workspace manager, branches, rollback |
+| GPU memory pressure | Sequential one-runtime-at-a-time autoswap |
+| Inference throughput | vLLM serving with prefix caching and configurable max sequences |
+| Context window pressure | Priority-based context budget manager |
+| Retrieval latency | Local Qdrant plus in-process BM25 index |
+| Repository indexing | Incremental manifest, AST parsing, chunking, embeddings, vector upsert |
+| Runtime observability | Runtime logs, PID/PGID metadata, swap history, request traces |
+| Benchmarking | Separate scripts for repository intelligence and multi-agent runtime throughput |
 
----
+Exact throughput depends on GPU, model size, quantization, context length, and repository size. The repo includes benchmark scripts so measurements can be produced on the target hardware instead of guessed in documentation.
 
-## 20. Metrics
+## Security and Safety
 
-Current Forge architecture includes:
+Forge's security posture is local-first and review-first:
 
-- 3 courtroom roles
-- 1 active runtime at a time
-- single-GPU sequential autoswap
-- vLLM OpenAI-compatible serving
-- repository intelligence pipeline
-- architecture memory
-- objective memory
-- semantic memory
-- repository RAG
-- knowledge graph
-- ADR system
-- context assembly engine
-- autonomous repair loop
-- convergence tracking
-- Git safety layer
-- workspace manager
-- run history and replay
-- production readiness scoring
-- Control Center IDE surface
+- Repository content, embeddings, vector store, artifacts, and model calls can stay on local infrastructure.
+- No cloud model provider is required by the core local runtime path.
+- API schemas reject unexpected fields.
+- Runtime shutdown targets process groups to reduce orphan worker risk.
+- Patch outputs are parsed and validated before application.
+- Test and validation gates feed convergence decisions.
+- Git diffs remain visible before commit.
+- Worktree and workspace abstractions are present for repository isolation.
 
-Execution phases:
+This is not a substitute for sandboxing untrusted code. Treat model-generated code and test execution as privileged local operations unless additional isolation is added.
 
-```mermaid
-graph LR
-    A[QUEUED] --> B[REPOSITORY_SCAN]
-    B --> C[PLANNING]
-    C --> D[CODER]
-    D --> E[SYNTH]
-    E --> F[JUDGE]
-    F --> G[PATCH]
-    G --> H[TESTS]
-    H --> I[REPAIR]
-    I --> D
-    H --> J[CONVERGED]
-    H --> K[FAILED]
+## Tech Stack
+
+| Layer | Stack |
+| --- | --- |
+| API | FastAPI, Pydantic, Uvicorn-compatible ASGI |
+| Inference | vLLM, OpenAI-compatible chat completions, transformers tokenizer |
+| Runtime | subprocess process groups, runtime metadata, local HTTP inference |
+| Retrieval | Qdrant local store, sentence-transformers, BM25 |
+| Parsing | Tree-sitter for Python, JavaScript, TypeScript, Go, Rust |
+| Agent runtime | Multi-agent orchestration, courtroom roles, convergence loops |
+| Validation | pytest, execution policy, patch validation, Git diffs |
+| Persistence | filesystem artifacts, local `.forge` state, local model directories |
+| Testing | pytest, pytest-asyncio |
+
+## Roadmap
+
+Near term:
+
+- Stronger runtime health checks around vLLM readiness and model registry validation.
+- More complete benchmark reporting with hardware profiles.
+- Improved patch explainability and artifact diff views.
+- Better visual validation for generated frontend work.
+- Contributor guide and issue templates.
+
+Medium term:
+
+- Docker and Compose deployment.
+- Multi-GPU scheduling.
+- More robust runtime placement and port management.
+- Richer repository graph queries.
+- Operator approval gates before file writes.
+- Frontend source tracked alongside screenshot assets.
+
+Long term:
+
+- Team-shared local memory stores.
+- Distributed local runtimes.
+- Enterprise local deployment patterns.
+- Reproducible autonomous engineering benchmark suite.
+- Hybrid local/cloud routing where policy allows it.
+
+## Contributing
+
+High-impact contribution areas:
+
+- Runtime lifecycle reliability.
+- Repository intelligence and retrieval quality.
+- Patch parsing and validation.
+- Test coverage for failure and repair loops.
+- Benchmarking with reproducible hardware profiles.
+- Operator UI source and interaction design.
+- Documentation for local model setup.
+
+Development loop:
+
+```bash
+pip install -e ".[dev]"
+pytest -q
+python scripts/smoke_test_repo_intel.py
+python scripts/smoke_test_multi_agent_runtime.py
 ```
 
----
+Before opening a PR, include:
 
-## 21. Control Center
+- The problem being solved.
+- The subsystem touched.
+- Tests or benchmark commands run.
+- Any model/runtime assumptions.
+- Any repository safety implications.
 
-The Control Center is the operator surface for Forge. It is designed as an AI engineering IDE rather than a monitoring dashboard.
+## Project Thesis
 
-```mermaid
-graph TD
-    UI[Control Center] --> Sidebar[Repository and Memory Sidebar]
-    UI --> Composer[Objective Composer]
-    UI --> Timeline[Execution Timeline]
-    UI --> Courtroom[Live Courtroom]
-    UI --> Diff[GitHub-Style Diff Viewer]
-    UI --> Inspector[Plan Files Memory Logs Inspector]
-    UI --> Dock[Bottom Terminal Dock]
+Useful autonomous software engineering is not one model call. It is infrastructure:
 
-    Dock --> Logs[Logs]
-    Dock --> Tests[Tests]
-    Dock --> Runtime[Runtime]
-    Dock --> Git[Git]
-```
-
-The UI answers the operator's immediate questions:
-
-- What is Forge doing right now?
-- Which model is active?
-- Which files are changing?
-- Which tests are running?
-- Did validation pass?
-- What did the models produce?
-- What will be committed?
-
----
-
-## 22. Future Roadmap
-
-Forge is designed to evolve toward a full local autonomous engineering workstation.
-
-Near-term:
-
-- stronger browser-based visual validation
-- richer semantic repository indexing
-- larger benchmark suite
-- better patch explainability
-- improved model-specific prompt profiles
-- more robust generated application validation
-
-Medium-term:
-
-- distributed local runtimes
-- multi-GPU scheduling
-- stronger task graph execution
-- agent collaboration across repositories
-- richer IDE integration
-- advanced interactive approval gates
-
-Long-term:
-
-- workstation-scale alternative to cloud agent systems
-- enterprise local deployment
-- team-shared local memory stores
-- reproducible autonomous engineering benchmarks
-- hybrid single-GPU and multi-GPU orchestration
-
----
-
-## 23. Why This Project Matters
-
-Forge is a systems engineering project disguised as an AI coding agent.
-
-It touches:
-
-- LLM inference systems
-- local vLLM serving
+- model serving
 - runtime lifecycle control
-- GPU memory management
-- structured output enforcement
-- repository analysis
-- context engineering
-- multi-agent orchestration
-- autonomous repair
+- repository understanding
+- context retrieval
+- structured artifacts
+- validation gates
+- repair loops
 - Git safety
-- local memory and retrieval
-- operator experience design
+- operator visibility
 
-The project demonstrates that useful autonomous software engineering requires much more than prompting a model. It requires infrastructure, state machines, telemetry, validation, memory, repository grounding, and safety boundaries.
-
-Forge's thesis is that organizations should be able to own that infrastructure locally.
+Forge is an implementation of that thesis for local AI engineering.
