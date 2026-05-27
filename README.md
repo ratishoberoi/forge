@@ -143,6 +143,18 @@ The canonical courtroom path currently uses:
 - `DEEPSEEK_SYNTH`: architecture and risk critique.
 - `JUDGE`: convergence and acceptance decision.
 
+## Local Model Set
+
+Forge uses three local model slots because the autonomous coding loop needs role separation without turning the runtime into an unbounded model zoo. The names below are the served model names passed to the local OpenAI-compatible vLLM server in `backend/runtime/autonomous_courtroom.py`.
+
+| Courtroom role | Served model name | Base model | Local path | Why this model is used |
+| --- | --- | --- | --- | --- |
+| `PRIMARY_CODER` | `qwen-primary` | `Qwen/Qwen3.5-35B-A3B` | `models/qwen-primary` | Primary implementation model. It is the default code-writing model because Qwen3.5 provides strong long-context reasoning, tool-use behavior, and coding capability for repository-scale edits. |
+| `DEEPSEEK_SYNTH` | `deepseek-synth` | `deepseek-ai/deepseek-coder-33b-instruct` | `models/deepseek-synth` | Independent synthesis and critique model. It gives the loop a different coder-family prior for architectural review, failure analysis, and challenging the primary implementation before a verdict is made. |
+| `JUDGE` | `qwen-judge` | `Qwen/QwQ-32B` | `models/qwen-judge` | Dedicated reasoning judge. It keeps final acceptance separate from the implementation model, reducing self-approval bias when evaluating tests, risks, and convergence. |
+
+Forge keeps the default runtime to these three models only because each role maps to a concrete engineering responsibility: generate, critique, and decide. Adding more always-on models would increase swap time, artifact volume, and validation latency without improving the core control loop unless a new model owns a distinct production responsibility.
+
 ## Single-GPU Runtime Autoswap
 
 Forge's runtime strategy is built for a workstation constraint: multiple large models, one active GPU runtime.
